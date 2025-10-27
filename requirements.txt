@@ -8,3 +8,4 @@ openpyxl
 python-dotenv
 numpy>=1.24
 hydralit-components>=1.0.10
+groq
