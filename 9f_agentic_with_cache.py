@@ -849,4 +849,4 @@ if df_hasil is not None:
             with st.expander(f"👨‍🏫 {row['Lecturer Name']}"):
                 dot = build_taksofolk_tree(row["Lecturer Name"], row.get("Field of Science 1"), row.get("Field of Science 2"), df_mapping)
                 st.graphviz_chart(dot)
-}
+
