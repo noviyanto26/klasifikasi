@@ -295,7 +295,7 @@ PROVIDER_CONFIG = {
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
             (APIError, "insufficient_quota"): ProviderQuotaError,
-            (APIError, "rate_limit_exceeded"): ProviderQuotaError,
+            (APIError, "Rate limit exceeded"): ProviderQuotaError,
             (APIError, "more credits"): ProviderQuotaError,
             (APIError, "Insufficient credits"): ProviderQuotaError,
         },
