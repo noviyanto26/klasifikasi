@@ -71,17 +71,25 @@ def _loads_json_strict(text: str) -> dict:
 # ==========================================================
 MAX_OUT_TOKENS = 4096  # agar output tidak kepotong & JSON utuh
 
-def _call_openai_compatible(client, model, temp, system, user):
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=temp,
-        response_format={"type": "json_object"},
-        messages=[
+# --- PERBAIKAN 1: Tambahkan use_json_format_param ---
+def _call_openai_compatible(client, model, temp, system, user, use_json_format_param: bool = True):
+    params = {
+        "model": model,
+        "temperature": temp,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=MAX_OUT_TOKENS,
-    )
+        "max_tokens": MAX_OUT_TOKENS,
+    }
+    
+    # Hanya tambahkan jika flag-nya True
+    if use_json_format_param:
+        params["response_format"] = {"type": "json_object"}
+
+    resp = client.chat.completions.create(**params)
+    # --- AKHIR PERBAIKAN 1 ---
+    
     content = resp.choices[0].message.content or ""
     return _loads_json_strict(content)
 
@@ -283,6 +291,7 @@ PROVIDER_CONFIG = {
         "api_key_name": "OPENROUTER_API_KEY",
         "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1"),
         "call_func": _call_openai_compatible,
+        # "supports_json_format_param": False, # (Default, tidak perlu ditambah)
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
             (APIError, "insufficient_quota"): ProviderQuotaError,
@@ -295,6 +304,7 @@ PROVIDER_CONFIG = {
         "api_key_name": "GROQ_API_KEY",
         "init_func": lambda key: Groq(api_key=key),
         "call_func": _call_openai_compatible,
+        "supports_json_format_param": True, # <<< PERBAIKAN 2: Ditambahkan
         "model": "llama-3.1-8b-instant",
         "error_map": {
             (BadRequestError, "json_validate_failed"): ProviderUnavailableError,
@@ -325,6 +335,7 @@ PROVIDER_CONFIG = {
             default_headers=_github_headers(),
         ),
         "call_func": _call_openai_compatible,
+        # "supports_json_format_param": False, # (Default, tidak perlu ditambah)
         "model": GITHUB_MODELS[0],  # default "openai/gpt-4o-mini"
         "error_map": {
             (APIError, "insufficient_quota"): ProviderQuotaError,
@@ -332,23 +343,18 @@ PROVIDER_CONFIG = {
             (APIError, "unknown_model"): ProviderUnavailableError,
         },
     },
-    "Ollama": {
-        "api_key_name": "OLLAMA_API_KEY",
-        "init_func": lambda key: OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
-        "call_func": _call_openai_compatible,
-        "model": "llama3.1",
-        "check_func": lambda: requests.get("http://localhost:11434", timeout=2).ok,
-        "error_map": {},
-    },
+    # --- OLLAMA DIHAPUS ---
 }
 
 # Inisialisasi Klien & cek ketersediaan — urutan prioritas default:
-ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google", "Ollama"]  # GitHub → Groq → OpenRouter → Google → Ollama
+# --- OLLAMA DIHAPUS DARI DAFTAR INI ---
+ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google"]  # GitHub → Groq → OpenRouter → Google
 default_available = []
 for name in ALL_POSSIBLE_PROVIDERS:
     config = PROVIDER_CONFIG[name]
     api_key = os.getenv(config["api_key_name"]) or (st.secrets.get(config["api_key_name"]) if hasattr(st, "secrets") else None)
-    is_available = bool(api_key) or name == "Ollama"
+    # --- OLLAMA DIHAPUS DARI LOGIKA INI ---
+    is_available = bool(api_key)
     if is_available:
         try:
             if "check_func" in config and not config["check_func"]():
@@ -486,14 +492,26 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
                 '- Gunakan tepat kunci: "final_field", "alternatives", "confidence", "reasoning", "supporting_sources" '
                 'atau sesuai schema yang diminta di prompt terkait.'
             )
+            
+            # --- START PERBAIKAN 3: Panggilan kondisional ---
+            call_params = {
+                "client": config["client"],
+                "model": model_to_use,
+                "temp": st.session_state.get(PG + "temp", 0.2),
+                "system": system_prompt_hard,
+                "user": user_prompt,
+            }
 
-            result = config["call_func"](
-                client=config["client"],
-                model=model_to_use,
-                temp=st.session_state.get(PG + "temp", 0.2),
-                system=system_prompt_hard,
-                user=user_prompt,
-            )
+            # Cek apakah func-nya _call_openai_compatible
+            if config["call_func"] == _call_openai_compatible:
+                # Default ke False (aman) jika kunci tidak ada
+                use_json_param = config.get("supports_json_format_param", False)
+                call_params["use_json_format_param"] = use_json_param
+            
+            # Panggil fungsi dengan parameter yang sudah disiapkan
+            result = config["call_func"](**call_params)
+            # --- END PERBAIKAN 3 ---
+
             st.toast(f"Berhasil dengan {provider_name}!", icon="✅")
             result["_used_provider"] = f"{provider_name} ({model_to_use.split('/')[-1]})"
             return result
@@ -814,7 +832,7 @@ if df_hasil is not None:
                     "cache_hasil.json",
                     key=PG + "dl_json_cache",
                     help="Simpan file ini! Upload file ini di sesi berikutnya untuk melanjutkan progres.",
-                    use_container_width=True
+                    use_container_width=Trove
                 )
         # --- END: MODIFIKASI 5 ---
 
@@ -831,3 +849,4 @@ if df_hasil is not None:
             with st.expander(f"👨‍🏫 {row['Lecturer Name']}"):
                 dot = build_taksofolk_tree(row["Lecturer Name"], row.get("Field of Science 1"), row.get("Field of Science 2"), df_mapping)
                 st.graphviz_chart(dot)
+}
