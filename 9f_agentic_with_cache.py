@@ -832,7 +832,7 @@ if df_hasil is not None:
                     "cache_hasil.json",
                     key=PG + "dl_json_cache",
                     help="Simpan file ini! Upload file ini di sesi berikutnya untuk melanjutkan progres.",
-                    use_container_width=Trove
+                    use_container_width=True
                 )
         # --- END: MODIFIKASI 5 ---
 
