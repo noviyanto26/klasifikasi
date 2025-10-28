@@ -339,6 +339,7 @@ PROVIDER_CONFIG = {
         "model": GITHUB_MODELS[0],  # default "openai/gpt-4o-mini"
         "error_map": {
             (APIError, "insufficient_quota"): ProviderQuotaError,
+            (APIError, "Too many requests"): ProviderQuotaError,
             (APIError, "Unknown model"): ProviderUnavailableError,
             (APIError, "unknown_model"): ProviderUnavailableError,
         },
