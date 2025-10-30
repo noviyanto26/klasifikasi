@@ -716,13 +716,20 @@ if st.session_state.get(PG + "df_hasil") is None:
             confidence_val = final_decision.get("confidence")
             safe_confidence_score = _safe_float(confidence_val)
 
+            # --- START PERBAIKAN ---
+            # Normalisasi skor jika LLM mengembalikan 80 (int) alih-alih 0.8 (float)
+            if safe_confidence_score > 1.0:
+                safe_confidence_score = safe_confidence_score / 100.0
+            # --- END PERBAIKAN ---
+
             hasil.append(
                 {
                     "Lecturer Name": dosen,
                     "Field of Science 1": bidang_ilmu_1,
                     "Field of Science 2": bidang_ilmu_2,
                     "Dominant Source": final_decision.get("_used_provider", "N/A"),
-                    "Confidence Score": round(safe_confidence_score * 100, 2),
+                    # Sekarang 'safe_confidence_score' PASTI antara 0.0 - 1.0
+                    "Confidence Score": round(safe_confidence_score * 100, 2), 
                     "Reasoning Log": final_decision.get("reasoning", ""),
                     "LLM JSON": json.dumps({"plan": plan, "final": final_decision}, ensure_ascii=False),
                 }
