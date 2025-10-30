@@ -24,7 +24,6 @@ from reportlab.lib.utils import ImageReader
 load_dotenv()
 st.set_page_config(page_title="Agentic AI Classification - TaksoFolk", page_icon="🧠", layout="wide")
 PG = "pg9aa_"  # Prefix state
-# --- MODIFIKASI 1: CACHE_FILE dihapus ---
 
 for k, v in [
     (PG + "started", False),
@@ -32,7 +31,7 @@ for k, v in [
     (PG + "df_mapping", None),
     (PG + "excel_bytes", None),
     (PG + "pdf_bytes", None),
-    (PG + "json_cache_bytes", None), # <<< MODIFIKASI 1: Ditambahkan
+    (PG + "json_cache_bytes", None),
 ]:
     st.session_state.setdefault(k, v)
 
@@ -42,34 +41,59 @@ for k, v in [
 def _extract_json_block(text: str) -> Optional[str]:
     if not text:
         return None
-    # 1) code-fence ```json ... ```
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    
+    # 1) Prioritaskan code-fence ```json ... ``` (mencari { } atau [ ])
+    m = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, flags=re.DOTALL)
     if m:
         return m.group(1)
-    # 2) blok dari { pertama ke } terakhir
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return text[start : end + 1]
+        
+    # 2) Jika tidak ada code fence, cari blok { } atau [ ] pertama yang valid
+    start_brace = text.find("{")
+    start_bracket = text.find("[")
+    
+    start_index = -1
+    
+    if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
+        start_index = start_brace
+        end_char = "}"
+    elif start_bracket != -1:
+        start_index = start_bracket
+        end_char = "]"
+    else:
+        return None
+
+    end_index = text.rfind(end_char)
+    
+    if end_index > start_index:
+        return text[start_index : end_index + 1]
+        
     return None
 
-def _loads_json_strict(text: str) -> dict:
+def _loads_json_strict(text: str) -> Any: # Diubah dari -> dict ke -> Any
+    """
+    Mencoba mem-parsing teks sebagai JSON.
+    Mampu menangani code fence, koma buntut, dan kutip non-standar.
+    Mengembalikan dict ATAU list.
+    """
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         cleaned = _extract_json_block(text)
         if not cleaned:
             raise
-        # hapus koma buntut
-        cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
-        # normalisasi kutip “ ” ‘ ’ → standar
-        cleaned = cleaned.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
-        return json.loads(cleaned)
+        
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+            cleaned = cleaned.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+            cleaned = re.sub(r'(?<!\\)"(.*?)(?<!\\)"', lambda m: '"' + m.group(1).replace('\n', '\\n') + '"', cleaned)
+            return json.loads(cleaned)
 
 # ==========================================================
 # PEMBUNGKUS PANGGILAN MODEL
 # ==========================================================
-MAX_OUT_TOKENS = 4096  # agar output tidak kepotong & JSON utuh
+MAX_OUT_TOKENS = 4096
 
 def _call_openai_compatible(client, model, temp, system, user):
     resp = client.chat.completions.create(
@@ -85,21 +109,17 @@ def _call_openai_compatible(client, model, temp, system, user):
     content = resp.choices[0].message.content or ""
     return _loads_json_strict(content)
 
-# --- MODIFIKASI 1: Mengubah _call_gemini agar dinamis membuat model ---
 def _call_gemini(client, model, temp, system, user):
-    # 'client' dari init_func adalah None (setelah modifikasi di PROVIDER_CONFIG)
-    # Kita menginisialisasi model di sini menggunakan string 'model' yang dipilih
     try:
         model_client = genai.GenerativeModel(model)
     except Exception as e:
-        # Menangkap error jika nama model salah atau API key belum dikonfigurasi
         raise ProviderUnavailableError(f"Gagal memuat model Google: {model}. Error: {e}")
 
     prompt = (
         f"{system}\n\n{user}\n\n"
         "Jawab HANYA JSON valid. TANPA markdown, TANPA code fence, TANPA teks lain di luar JSON."
     )
-    resp = model_client.generate_content( # Menggunakan model_client yang baru dibuat
+    resp = model_client.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(
             temperature=temp,
@@ -109,7 +129,6 @@ def _call_gemini(client, model, temp, system, user):
     )
     content = resp.text or ""
     return _loads_json_strict(content)
-# --- AKHIR MODIFIKASI 1 ---
 
 class ProviderQuotaError(Exception): ...
 class ProviderUnavailableError(Exception): ...
@@ -253,24 +272,15 @@ def get_all_dosen_safely(dfs: Dict[str, pd.DataFrame]):
 # ==========================================================
 st.sidebar.header("⚙️ LLM Settings")
 
-# --- Daftar model GitHub (STATIS, sesuai ketentuan) ---
 GITHUB_MODELS: List[str] = [
-    "openai/gpt-4o-mini",                 # plug-and-play
-    "microsoft/phi-4-mini-instruct",
-    "meta/meta-llama-3.1-8b-instruct",
-    "meta/llama-3.3-70b-instruct",
-    "deepseek/deepseek-v3-0324",
-    "google/gemma-2-9b-it",
-    "mistralai/mistral-7b-instruct",
-    "ai21-labs/ai21-jamba-1.5-mini",
-    "deepseek/deepseek-r1-0528",
-    "cohere/cohere-command-r-08-2024",
-    "ai21-labs/ai21-jamba-1.5-large",
-    "core42/jais-30b-chat"
+    "openai/gpt-4o-mini", "microsoft/phi-4-mini-instruct", "meta/meta-llama-3.1-8b-instruct",
+    "meta/llama-3.3-70b-instruct", "deepseek/deepseek-v3-0324", "google/gemma-2-9b-it",
+    "mistralai/mistral-7b-instruct", "ai21-labs/ai21-jamba-1.5-mini", "deepseek/deepseek-r1-0528",
+    "cohere/cohere-command-r-08-2024", "ai21-labs/ai21-jamba-1.5-large", "core42/jais-30b-chat"
 ]
 
 # ==========================================================
-# DEFINISI PROVIDER (tanpa DeepSeek provider)
+# DEFINISI PROVIDER
 # ==========================================================
 def _github_headers():
     return {
@@ -285,10 +295,8 @@ PROVIDER_CONFIG = {
         "call_func": _call_openai_compatible,
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
-            (APIError, "insufficient_quota"): ProviderQuotaError,
-            (APIError, "rate_limit_exceeded"): ProviderQuotaError,
-            (APIError, "more credits"): ProviderQuotaError,
-            (APIError, "Insufficient credits"): ProviderQuotaError,
+            (APIError, "insufficient_quota"): ProviderQuotaError, (APIError, "rate_limit_exceeded"): ProviderQuotaError,
+            (APIError, "more credits"): ProviderQuotaError, (APIError, "Insufficient credits"): ProviderQuotaError,
         },
     },
     "Groq": {
@@ -297,38 +305,30 @@ PROVIDER_CONFIG = {
         "call_func": _call_openai_compatible,
         "model": "llama-3.1-8b-instant",
         "error_map": {
-            (BadRequestError, "json_validate_failed"): ProviderUnavailableError,
-            (APIError, "insufficient_quota"): ProviderQuotaError,
+            (BadRequestError, "json_validate_failed"): ProviderUnavailableError, (APIError, "insufficient_quota"): ProviderQuotaError,
             (APIError, "tokens per day"): ProviderQuotaError,
         },
     },
-    # --- MODIFIKASI 2: Mengubah init_func Google ---
     "Google": {
         "api_key_name": "GOOGLE_API_KEY",
-        # init_func HANYA mengkonfigurasi API key. Client akan 'None'.
-        # Model akan dibuat di dalam _call_gemini
         "init_func": lambda key: genai.configure(api_key=key),
         "call_func": _call_gemini,
-        "model": "models/gemini-2.5-flash", # Default model jika tidak ada pilihan
+        "model": "models/gemini-2.5-flash",
         "error_map": {
             (google_exceptions.ResourceExhausted, "free_tier_requests"): ProviderQuotaError,
             (google_exceptions.NotFound, "was not found"): ProviderUnavailableError,
             (google_exceptions.PermissionDenied, "does not have access"): ProviderUnavailableError,
         },
     },
-    # --- AKHIR MODIFIKASI 2 ---
     "GitHub": {
         "api_key_name": "GITHUB_API_KEY",
         "init_func": lambda key: OpenAI(
-            api_key=key,
-            base_url="https://models.github.ai/inference",
-            default_headers=_github_headers(),
+            api_key=key, base_url="https://models.github.ai/inference", default_headers=_github_headers(),
         ),
         "call_func": _call_openai_compatible,
-        "model": GITHUB_MODELS[0],  # default "openai/gpt-4o-mini"
+        "model": GITHUB_MODELS[0],
         "error_map": {
-            (APIError, "insufficient_quota"): ProviderQuotaError,
-            (APIError, "Unknown model"): ProviderUnavailableError,
+            (APIError, "insufficient_quota"): ProviderQuotaError, (APIError, "Unknown model"): ProviderUnavailableError,
             (APIError, "unknown_model"): ProviderUnavailableError,
         },
     },
@@ -342,8 +342,7 @@ PROVIDER_CONFIG = {
     },
 }
 
-# Inisialisasi Klien & cek ketersediaan — urutan prioritas default:
-ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google", "Ollama"]  # GitHub → Groq → OpenRouter → Google → Ollama
+ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google", "Ollama"]
 default_available = []
 for name in ALL_POSSIBLE_PROVIDERS:
     config = PROVIDER_CONFIG[name]
@@ -371,54 +370,25 @@ FALLBACK_ORDER = selected_providers
 AVAILABLE_PROVIDERS = [p for p in FALLBACK_ORDER if PROVIDER_CONFIG[p].get("is_available")]
 st.sidebar.info(f"Active Fallback Sequence: {' → '.join(AVAILABLE_PROVIDERS) or 'Tidak ada'}")
 
-# Pilihan model per provider
 OPENROUTER_MODELS = [
-    # Model lama Anda jika masih ingin dipakai
-    "meta-llama/llama-3.3-70b-instruct",
-    "google/gemini-pro-2.5",
-    "openai/gpt-4o",
-    # === Tambahan model free dari file Excel ===
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "meta-llama/llama-3.3-8b-instruct:free",
-    "nvidia/nemotron-nano-9b-v2:free",          # ✅ direkomendasikan utama
-    "deepseek/deepseek-chat-v3.1:free",         # ✅ layak (fallback JSON)
-    "openai/gpt-oss-20b:free",                  # ✅ layak (uji JSON)
-    "meituan/longcat-flash-chat:free",          # ⚠ risiko JSON
-    "alibaba/tongyi-deepresearch-30b-a3b:free", # ⚠ cenderung naratif, tidak ketat JSON
+    "meta-llama/llama-3.3-70b-instruct", "google/gemini-pro-2.5", "openai/gpt-4o",
+    "meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.2-3b-instruct:free",
+    "meta-llama/llama-3.3-8b-instruct:free", "nvidia/nemotron-nano-9b-v2:free",
+    "deepseek/deepseek-chat-v3.1:free", "openai/gpt-oss-20b:free",
+    "meituan/longcat-flash-chat:free", "alibaba/tongyi-deepresearch-30b-a3b:free",
 ]
 GROQ_MODELS = [
-    "allam-2-7b",
-    "whisper-large-v3",
-    "openai/gpt-oss-120b",
-    "meta-llama/llama-prompt-guard-2-86m",
-    "groq/compound-mini",
-    "playai-tts",
-    "groq/compound",
-    "playai-tts-arabic",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-    "qwen/qwen3-32b",
-    "moonshotai/kimi-k2-instruct",
-    "whisper-large-v3-turbo",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-guard-4-12b",
-    "meta-llama/llama-prompt-guard-2-22m",
-    "llama-3.1-8b-instant",
-    "openai/gpt-oss-20b",
-    "llama-3.3-70b-versatile",
-    "moonshotai/kimi-k2-instruct-0905",
+    "allam-2-7b", "whisper-large-v3", "openai/gpt-oss-120b", "meta-llama/llama-prompt-guard-2-86m",
+    "groq/compound-mini", "playai-tts", "groq/compound", "playai-tts-arabic",
+    "meta-llama/llama-4-maverick-17b-128e-instruct", "qwen/qwen3-32b", "moonshotai/kimi-k2-instruct",
+    "whisper-large-v3-turbo", "meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-guard-4-12b",
+    "meta-llama/llama-prompt-guard-2-22m", "llama-3.1-8b-instant", "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile", "moonshotai/kimi-k2-instruct-0905",
 ]
-
-# --- MODIFIKASI 3: Menambahkan daftar model Google ---
 GOOGLE_MODELS = [
-    "models/gemini-2.5-pro",
-    "models/gemini-2.5-flash",
-    "models/gemini-pro-latest",
-    "models/gemini-flash-latest",
-    "models/gemma-3-12b-it",
-    "models/gemma-3-27b-it",
+    "models/gemini-2.5-pro", "models/gemini-2.5-flash", "models/gemini-pro-latest",
+    "models/gemini-flash-latest", "models/gemma-3-12b-it", "models/gemma-3-27b-it",
 ]
-# --- AKHIR MODIFIKASI 3 ---
 
 st.sidebar.subheader("Model Selection")
 st.session_state[PG + "openrouter_model"] = st.sidebar.selectbox(
@@ -430,25 +400,17 @@ st.session_state[PG + "groq_model"] = st.sidebar.selectbox(
 st.session_state[PG + "github_model"] = st.sidebar.selectbox(
     "GitHub Models", options=GITHUB_MODELS, key=PG + "_github_model_widget"
 )
-
-# --- MODIFIKASI 4: Menambahkan selectbox Google ---
 st.session_state[PG + "google_model"] = st.sidebar.selectbox(
     "Google Models", options=GOOGLE_MODELS, key=PG + "_google_model_widget"
 )
-# --- AKHIR MODIFIKASI 4 ---
-
-
 st.sidebar.caption("Make sure API keys are set in .env or Streamlit Secrets.")
 st.session_state[PG + "temp"] = st.sidebar.slider(
     "Temperature", 0.0, 1.0, 0.2, 0.1, key=PG + "_temp_widget",
-    help=("""Set the model's creativity level:
-- 0.0–0.2: Consistent and deterministic answers.
-- 0.3–0.6: Balance consistency & variety.
-- 0.7–1.0: Creative, but less stable.""")
+    help="0.0: Konsisten. 1.0: Kreatif."
 )
 max_self_reflect = st.sidebar.slider(
     "Max. Self-Reflect cycle", 0, 2, 1, 1, key=PG + "cycles",
-    help="Higher values ​​have the potential to improve quality, but slow down the process.."
+    help="Meningkatkan kualitas, tapi memperlambat proses."
 )
 
 # ==========================================================
@@ -465,7 +427,6 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
         try:
             st.toast(f"Trying out providers: {provider_name}...")
             
-            # --- MODIFIKASI 5: Menambahkan logika untuk mengambil model Google ---
             model_to_use = config["model"]
             if provider_name == "OpenRouter":
                 model_to_use = st.session_state.get(PG + "openrouter_model", config["model"])
@@ -475,24 +436,19 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
                 model_to_use = st.session_state.get(PG + "github_model", config["model"])
             elif provider_name == "Google":
                 model_to_use = st.session_state.get(PG + "google_model", config["model"])
-            # --- AKHIR MODIFIKASI 5 ---
 
-            # Perketat sistem prompt agar anti-teks tambahan
             system_prompt_hard = (
                 f"{system_prompt}\n\n"
-                "OUTPUT RULES:\n"
-                "- Jawab HANYA JSON valid.\n"
+                "OUTPUT RULES:\n- Jawab HANYA JSON valid.\n"
                 "- TANPA markdown, TANPA code fence, TANPA penjelasan di luar JSON.\n"
                 '- Gunakan tepat kunci: "final_field", "alternatives", "confidence", "reasoning", "supporting_sources" '
-                'atau sesuai schema yang diminta di prompt terkait.'
+                'atau sesuai schema yang diminta.'
             )
 
             result = config["call_func"](
-                client=config["client"],
-                model=model_to_use,
+                client=config["client"], model=model_to_use,
                 temp=st.session_state.get(PG + "temp", 0.2),
-                system=system_prompt_hard,
-                user=user_prompt,
+                system=system_prompt_hard, user=user_prompt,
             )
             st.toast(f"Berhasil dengan {provider_name}!", icon="✅")
             result["_used_provider"] = f"{provider_name} ({model_to_use.split('/')[-1]})"
@@ -503,21 +459,14 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
             msg = str(e)
             should_fallback = False
 
-            # === Deteksi khusus OpenRouter 402 (Insufficient credits) ===
             status_402 = getattr(e, "status_code", None) == 402 or "code': 402" in msg or 'code": 402' in msg or " 402 " in msg
             if provider_name == "OpenRouter" and ("Insufficient credits" in msg or status_402):
-                st.warning(
-                    "⚠️ OpenRouter: Insufficient credits (402). Switch to the next provider. "
-                    "Top up your balance at https://openrouter.ai/settings/credits if you want to use OpenRouter."
-                )
+                st.warning("⚠️ OpenRouter: Insufficient credits (402). Beralih...")
                 should_fallback = True
-
-            # === Deteksi khusus GitHub unknown model ===
             if provider_name == "GitHub" and ("Unknown model" in msg or "unknown_model" in msg):
-                st.warning("⚠️ GitHub Models: Unknown model. Switch to the next provider / choose another model.")
+                st.warning("⚠️ GitHub Models: Unknown model. Beralih...")
                 should_fallback = True
 
-            # Mapping error -> fallback (kuota, rate limit, dsb.)
             if not should_fallback:
                 for (error_type, error_text), mapped_exception in config["error_map"].items():
                     if isinstance(e, error_type) and (error_text is None or error_text in msg):
@@ -525,26 +474,28 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
                         should_fallback = True
                         break
 
-            # Respons bukan JSON
             if not should_fallback and isinstance(e, json.JSONDecodeError):
-                st.warning(f"Provider {provider_name} returns a non-JSON response. Switch...")
+                st.warning(f"Provider {provider_name} returns a non-JSON response. Beralih...")
                 should_fallback = True
 
             if not should_fallback:
-                # error lain yang tidak dipetakan -> hentikan
                 raise e
 
-    # Jika semua gagal
     raise ProviderUnavailableError(f"All providers failed. Last error: {last_error}")
 
 # ==========================================================
 # AGENS (PLAN → DRAFT → CRITIQUE → FINALIZE)
 # ==========================================================
 def _ekstrak_nama_bidang(data: Any) -> Optional[str]:
-    if isinstance(data, dict):
-        return data.get("field")
+    """
+    Mengekstrak nama bidang dari berbagai format respons LLM yang tidak terduga.
+    """
     if isinstance(data, str) and data.strip():
         return data
+    if isinstance(data, dict):
+        return data.get("field")
+    if isinstance(data, list) and len(data) > 0:
+        return _ekstrak_nama_bidang(data[0])
     return None
 
 def agentic_plan(nama_dosen, candidates, evidence):
@@ -568,8 +519,7 @@ def agentic_draft(nama_dosen, evidence, candidates, plan):
     )
     system_prompt = "Anda adalah pakar klasifikasi taksonomi keilmuan."
     return proses_dengan_ai(
-        system_prompt,
-        user_prompt,
+        system_prompt, user_prompt,
         {"final_field": "Gagal", "alternatives": [], "confidence": 0.0, "reasoning": "Gagal", "supporting_sources": {}},
     )
 
@@ -597,27 +547,20 @@ st.sidebar.header("📂 Upload Analysis File")
 files = {
     name: st.sidebar.file_uploader(label, type=["xlsx"], key=f"{PG}{name}")
     for name, label in [
-        ("homebase", "Homebase Dosen"),
-        ("pendidikan", "Riwayat Pendidikan"),
-        ("mengajar", "Riwayat Mengajar"),
-        ("publikasi", "Publikasi"),
-        ("pengabdian", "Pengabdian"),
-        ("scholar", "Google Scholar"),
+        ("homebase", "Homebase Dosen"), ("pendidikan", "Riwayat Pendidikan"),
+        ("mengajar", "Riwayat Mengajar"), ("publikasi", "Publikasi"),
+        ("pengabdian", "Pengabdian"), ("scholar", "Google Scholar"),
         ("mapping", "Mapping TaksoFolk"),
     ]
 }
 
-# --- START: MODIFIKASI 2: PENAMBAHAN UPLOAD CACHE JSON ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📤 (Optional) Continue Session")
 cache_file = st.sidebar.file_uploader(
-    "Upload Cache (cache_hasil.json)", 
-    type=["json"], 
-    key=PG + "cache_file",
-    help="Upload the .json file you downloaded from the previous session to continue progress.."
+    "Upload Cache (cache_hasil.json)", type=["json"], key=PG + "cache_file",
+    help="Upload file .json dari sesi sebelumnya untuk melanjutkan progres."
 )
 st.sidebar.markdown("---")
-# --- END: MODIFIKASI 2 ---
 
 c1, c2 = st.sidebar.columns(2)
 if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True):
@@ -652,21 +595,18 @@ if st.session_state.get(PG + "df_hasil") is None:
         st.error("No lecturer names were found.")
         st.stop()
 
-    # --- START: MODIFIKASI 3: LOGIKA PEMBACAAN CACHE UPLOAD ---
     cached_df = pd.DataFrame()
     dosen_to_process = all_dosen
     
-    # Cek jika file cache di-upload (cache_file diambil dari state)
     if cache_file is not None:
         try:
-            # Baca JSON langsung ke DataFrame
             cached_df = pd.read_json(cache_file) 
             if "Lecturer Name" in cached_df.columns:
                 processed_dosen = set(cached_df["Lecturer Name"].astype(str))
                 dosen_to_process = [d for d in all_dosen if d not in processed_dosen]
                 st.info(f"✅ Cache JSON ditemukan. {len(processed_dosen)} dosen akan dilewati. {len(dosen_to_process)} dosen baru akan diproses.")
             else:
-                st.warning("Cache JSON tidak valid (tidak ada 'Lecturer Name'). Memproses ulang.")
+                st.warning("Cache JSON tidak valid. Memproses ulang.")
                 dosen_to_process = all_dosen
         except Exception as e:
             st.warning(f"Gagal membaca cache JSON: {e}. Memproses ulang.")
@@ -674,12 +614,10 @@ if st.session_state.get(PG + "df_hasil") is None:
     else:
         st.info(f"Cache tidak di-upload. Memproses {len(dosen_to_process)} dosen dari awal.")
 
-    hasil = [] # 'hasil' HANYA menampung data baru
+    hasil = []
     progress_bar = st.progress(0, text="Memulai analisis...")
     start_time = time.time()
 
-    # Penanganan jika tidak ada yang perlu diproses (sudah di-cache semua)
-    # (Perbaikan dari error sebelumnya: `if not dosen_to_process:` diubah ke `if len(...) == 0:`)
     if len(dosen_to_process) == 0:
          st.success("✅ Tidak ada dosen baru untuk diproses. Semua data diambil dari cache.")
          st.session_state[PG + "df_hasil"] = cached_df
@@ -689,13 +627,12 @@ if st.session_state.get(PG + "df_hasil") is None:
             st.session_state[PG + "excel_bytes"] = out_xlsx.getvalue()
             st.session_state[PG + "pdf_bytes"] = export_trees_to_pdf(cached_df, dfs["mapping"]).getvalue()
             
-            # Siapkan juga cache JSON untuk diunduh ulang
             json_string = cached_df.to_json(orient='records', indent=4)
             st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
          st.rerun()
-    # --- END: MODIFIKASI 3 ---
 
-   try:
+    # --- INI ADALAH BLOK try...finally YANG BENAR DAN LENGKAP ---
+    try:
         total_to_process = len(dosen_to_process)
         for i, dosen in enumerate(sorted(dosen_to_process), 1):
             evidence, candidates = collect_all_evidence(dosen, dfs)
@@ -716,11 +653,10 @@ if st.session_state.get(PG + "df_hasil") is None:
             confidence_val = final_decision.get("confidence")
             safe_confidence_score = _safe_float(confidence_val)
 
-            # --- START PERBAIKAN ---
-            # Normalisasi skor jika LLM mengembalikan 80 (int) alih-alih 0.8 (float)
+            # --- PERBAIKAN BUG "8000" ---
             if safe_confidence_score > 1.0:
                 safe_confidence_score = safe_confidence_score / 100.0
-            # --- END PERBAIKAN ---
+            # --- AKHIR PERBAIKAN ---
 
             hasil.append(
                 {
@@ -728,8 +664,7 @@ if st.session_state.get(PG + "df_hasil") is None:
                     "Field of Science 1": bidang_ilmu_1,
                     "Field of Science 2": bidang_ilmu_2,
                     "Dominant Source": final_decision.get("_used_provider", "N/A"),
-                    # Sekarang 'safe_confidence_score' PASTI antara 0.0 - 1.0
-                    "Confidence Score": round(safe_confidence_score * 100, 2), 
+                    "Confidence Score": round(safe_confidence_score * 100, 2),
                     "Reasoning Log": final_decision.get("reasoning", ""),
                     "LLM JSON": json.dumps({"plan": plan, "final": final_decision}, ensure_ascii=False),
                 }
@@ -746,21 +681,18 @@ if st.session_state.get(PG + "df_hasil") is None:
     except Exception as e:
         st.error(f"🛑 Proses dihentikan karena error: {e}")
         st.warning(f"Menyimpan hasil parsial untuk {len(hasil)} dosen yang baru diproses.")
+    
     finally:
-        # --- START: MODIFIKASI 4: BLOK FINALLY UNTUK CACHE JSON ---
         progress_bar.empty()
         
         df_new_results = pd.DataFrame(hasil) if hasil else pd.DataFrame()
         
-        # 'cached_df' sudah didefinisikan di atas (dari file upload)
         if 'cached_df' not in locals():
             cached_df = pd.DataFrame() 
             
-        # Periksa apakah ada hasil (baru atau lama) untuk diproses
         if not df_new_results.empty or not cached_df.empty:
             with st.spinner("Menggabungkan hasil baru dengan cache dan membuat file..."):
                 
-                # Gabungkan data lama (cache) dengan data baru (hasil)
                 if not cached_df.empty:
                     df_hasil = pd.concat([cached_df, df_new_results]).drop_duplicates(
                         subset=["Lecturer Name"], keep="last"
@@ -768,26 +700,19 @@ if st.session_state.get(PG + "df_hasil") is None:
                 else:
                     df_hasil = df_new_results
                 
-                # Set state session dengan hasil gabungan
                 st.session_state[PG + "df_hasil"] = df_hasil
-                
                 st.success(f"✅ Hasil gabungan ({len(df_hasil)} dosen) telah diproses.")
                 
-                # Buat file download Excel (dari hasil gabungan)
                 out_xlsx = io.BytesIO()
                 df_hasil.to_excel(out_xlsx, index=False, engine="openpyxl")
                 st.session_state[PG + "excel_bytes"] = out_xlsx.getvalue()
                 
-                # Buat file download PDF
                 st.session_state[PG + "pdf_bytes"] = export_trees_to_pdf(df_hasil, dfs["mapping"]).getvalue()
 
-                # Buat file CACHE JSON untuk diunduh
                 json_string = df_hasil.to_json(orient='records', indent=4)
                 st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
-
         else:
             st.session_state[PG + "df_hasil"] = None
-        # --- END: MODIFIKASI 4 ---
 
 # ==========================================================
 # OUTPUT UI
@@ -796,8 +721,6 @@ df_hasil = st.session_state.get(PG + "df_hasil")
 df_mapping = st.session_state.get(PG + "df_mapping")
 
 if df_hasil is not None:
-    
-    # --- MODIFIKASI: Menambahkan tab 'Statistics' ---
     tab_titles = ["📊 Results Table", "🌳 Taxo-Folk Tree", "📈 Statistics"]
     tab1, tab2, tab3 = st.tabs(tab_titles)
     
@@ -805,7 +728,6 @@ if df_hasil is not None:
         st.subheader("📊 Analysis Results")
         st.dataframe(df_hasil)
         
-        # --- START: MODIFIKASI 5: TOMBOL DOWNLOAD CACHE JSON ---
         col1, col2 = st.columns(2) 
         with col1:
             if st.session_state.get(PG + "excel_bytes"):
@@ -813,8 +735,7 @@ if df_hasil is not None:
                     "💾 Download Laporan (Excel)",
                     st.session_state[PG + "excel_bytes"],
                     "hasil_klasifikasi.xlsx",
-                    key=PG + "dl_excel",
-                    use_container_width=True
+                    key=PG + "dl_excel", use_container_width=True
                 )
         
         with col2:
@@ -827,7 +748,6 @@ if df_hasil is not None:
                     help="Simpan file ini! Upload file ini di sesi berikutnya untuk melanjutkan progres.",
                     use_container_width=True
                 )
-        # --- END: MODIFIKASI 5 ---
 
     with tab2:
         st.subheader("🌳 Taxo-Folk Tree per Lecturer")
@@ -843,14 +763,12 @@ if df_hasil is not None:
                 dot = build_taksofolk_tree(row["Lecturer Name"], row.get("Field of Science 1"), row.get("Field of Science 2"), df_mapping)
                 st.graphviz_chart(dot)
 
-    # --- START: BLOK KODE BARU UNTUK TAB 3 ---
     with tab3:
         st.subheader("📈 Confidence Score Statistics")
         
         if "Confidence Score" not in df_hasil.columns:
             st.warning("Kolom 'Confidence Score' tidak ditemukan.")
         else:
-            # Konversi ke numerik, paksa error ke NaN, lalu hapus NaN
             confidence_scores = pd.to_numeric(df_hasil["Confidence Score"], errors='coerce').dropna()
             
             if confidence_scores.empty:
@@ -858,36 +776,23 @@ if df_hasil is not None:
             else:
                 st.markdown("Ringkasan Statistik Deskriptif untuk **Confidence Score (%)**")
                 
-                # Tampilkan metrik utama
                 cols_metrik = st.columns(4)
                 cols_metrik[0].metric("Rata-rata", f"{confidence_scores.mean():.2f} %")
                 cols_metrik[1].metric("Median", f"{confidence_scores.median():.2f} %")
                 cols_metrik[2].metric("Minimum", f"{confidence_scores.min():.2f} %")
                 cols_metrik[3].metric("Maksimum", f"{confidence_scores.max():.2f} %")
                 
-                # Tampilkan tabel describe()
                 st.dataframe(confidence_scores.describe())
 
                 st.markdown("---")
                 st.subheader("Distribusi Confidence Score")
                 
                 try:
-                    # Buat bin untuk histogram (misal: 0-10, 10-20, ..., 90-100)
-                    # Kita gunakan pd.cut
                     bins = pd.cut(confidence_scores, bins=range(0, 101, 10), right=True)
-                    
-                    # Hitung jumlah di setiap bin
                     hist_data = bins.value_counts().sort_index()
-                    
-                    # Ubah nama index agar lebih mudah dibaca di chart
                     hist_data.index = hist_data.index.astype(str)
-                    
-                    # Ubah nama Series agar ada label di chart
                     hist_data.name = "Jumlah Dosen"
-                    
                     st.bar_chart(hist_data)
                     st.caption("Histogram yang menunjukkan jumlah dosen per rentang skor kepercayaan (interval 10%).")
-
                 except Exception as e:
                     st.error(f"Gagal membuat histogram: {e}")
-    # --- END: BLOK KODE BARU UNTUK TAB 3 ---
