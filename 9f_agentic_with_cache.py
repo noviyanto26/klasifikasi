@@ -71,25 +71,17 @@ def _loads_json_strict(text: str) -> dict:
 # ==========================================================
 MAX_OUT_TOKENS = 4096  # agar output tidak kepotong & JSON utuh
 
-# --- PERBAIKAN 1: Tambahkan use_json_format_param ---
-def _call_openai_compatible(client, model, temp, system, user, use_json_format_param: bool = True):
-    params = {
-        "model": model,
-        "temperature": temp,
-        "messages": [
+def _call_openai_compatible(client, model, temp, system, user):
+    resp = client.chat.completions.create(
+        model=model,
+        temperature=temp,
+        response_format={"type": "json_object"},
+        messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": MAX_OUT_TOKENS,
-    }
-    
-    # Hanya tambahkan jika flag-nya True
-    if use_json_format_param:
-        params["response_format"] = {"type": "json_object"}
-
-    resp = client.chat.completions.create(**params)
-    # --- AKHIR PERBAIKAN 1 ---
-    
+        max_tokens=MAX_OUT_TOKENS,
+    )
     content = resp.choices[0].message.content or ""
     return _loads_json_strict(content)
 
@@ -291,11 +283,10 @@ PROVIDER_CONFIG = {
         "api_key_name": "OPENROUTER_API_KEY",
         "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1"),
         "call_func": _call_openai_compatible,
-        # "supports_json_format_param": False, # (Default, tidak perlu ditambah)
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
             (APIError, "insufficient_quota"): ProviderQuotaError,
-            (APIError, "Rate limit exceeded"): ProviderQuotaError,
+            (APIError, "rate_limit_exceeded"): ProviderQuotaError,
             (APIError, "more credits"): ProviderQuotaError,
             (APIError, "Insufficient credits"): ProviderQuotaError,
         },
@@ -304,7 +295,6 @@ PROVIDER_CONFIG = {
         "api_key_name": "GROQ_API_KEY",
         "init_func": lambda key: Groq(api_key=key),
         "call_func": _call_openai_compatible,
-        "supports_json_format_param": True, # <<< PERBAIKAN 2: Ditambahkan
         "model": "llama-3.1-8b-instant",
         "error_map": {
             (BadRequestError, "json_validate_failed"): ProviderUnavailableError,
@@ -335,27 +325,30 @@ PROVIDER_CONFIG = {
             default_headers=_github_headers(),
         ),
         "call_func": _call_openai_compatible,
-        # "supports_json_format_param": False, # (Default, tidak perlu ditambah)
         "model": GITHUB_MODELS[0],  # default "openai/gpt-4o-mini"
         "error_map": {
             (APIError, "insufficient_quota"): ProviderQuotaError,
-            (APIError, "Too many requests"): ProviderQuotaError,
             (APIError, "Unknown model"): ProviderUnavailableError,
             (APIError, "unknown_model"): ProviderUnavailableError,
         },
     },
-    # --- OLLAMA DIHAPUS ---
+    "Ollama": {
+        "api_key_name": "OLLAMA_API_KEY",
+        "init_func": lambda key: OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
+        "call_func": _call_openai_compatible,
+        "model": "llama3.1",
+        "check_func": lambda: requests.get("http://localhost:11434", timeout=2).ok,
+        "error_map": {},
+    },
 }
 
 # Inisialisasi Klien & cek ketersediaan — urutan prioritas default:
-# --- OLLAMA DIHAPUS DARI DAFTAR INI ---
-ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google"]  # GitHub → Groq → OpenRouter → Google
+ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google", "Ollama"]  # GitHub → Groq → OpenRouter → Google → Ollama
 default_available = []
 for name in ALL_POSSIBLE_PROVIDERS:
     config = PROVIDER_CONFIG[name]
     api_key = os.getenv(config["api_key_name"]) or (st.secrets.get(config["api_key_name"]) if hasattr(st, "secrets") else None)
-    # --- OLLAMA DIHAPUS DARI LOGIKA INI ---
-    is_available = bool(api_key)
+    is_available = bool(api_key) or name == "Ollama"
     if is_available:
         try:
             if "check_func" in config and not config["check_func"]():
@@ -493,26 +486,14 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
                 '- Gunakan tepat kunci: "final_field", "alternatives", "confidence", "reasoning", "supporting_sources" '
                 'atau sesuai schema yang diminta di prompt terkait.'
             )
-            
-            # --- START PERBAIKAN 3: Panggilan kondisional ---
-            call_params = {
-                "client": config["client"],
-                "model": model_to_use,
-                "temp": st.session_state.get(PG + "temp", 0.2),
-                "system": system_prompt_hard,
-                "user": user_prompt,
-            }
 
-            # Cek apakah func-nya _call_openai_compatible
-            if config["call_func"] == _call_openai_compatible:
-                # Default ke False (aman) jika kunci tidak ada
-                use_json_param = config.get("supports_json_format_param", False)
-                call_params["use_json_format_param"] = use_json_param
-            
-            # Panggil fungsi dengan parameter yang sudah disiapkan
-            result = config["call_func"](**call_params)
-            # --- END PERBAIKAN 3 ---
-
+            result = config["call_func"](
+                client=config["client"],
+                model=model_to_use,
+                temp=st.session_state.get(PG + "temp", 0.2),
+                system=system_prompt_hard,
+                user=user_prompt,
+            )
             st.toast(f"Berhasil dengan {provider_name}!", icon="✅")
             result["_used_provider"] = f"{provider_name} ({model_to_use.split('/')[-1]})"
             return result
@@ -808,7 +789,11 @@ df_hasil = st.session_state.get(PG + "df_hasil")
 df_mapping = st.session_state.get(PG + "df_mapping")
 
 if df_hasil is not None:
-    tab1, tab2 = st.tabs(["📊 Results Table", "🌳 Taxo-Folk Tree"])
+    
+    # --- MODIFIKASI: Menambahkan tab 'Statistics' ---
+    tab_titles = ["📊 Results Table", "🌳 Taxo-Folk Tree", "📈 Statistics"]
+    tab1, tab2, tab3 = st.tabs(tab_titles)
+    
     with tab1:
         st.subheader("📊 Analysis Results")
         st.dataframe(df_hasil)
@@ -851,3 +836,51 @@ if df_hasil is not None:
                 dot = build_taksofolk_tree(row["Lecturer Name"], row.get("Field of Science 1"), row.get("Field of Science 2"), df_mapping)
                 st.graphviz_chart(dot)
 
+    # --- START: BLOK KODE BARU UNTUK TAB 3 ---
+    with tab3:
+        st.subheader("📈 Confidence Score Statistics")
+        
+        if "Confidence Score" not in df_hasil.columns:
+            st.warning("Kolom 'Confidence Score' tidak ditemukan.")
+        else:
+            # Konversi ke numerik, paksa error ke NaN, lalu hapus NaN
+            confidence_scores = pd.to_numeric(df_hasil["Confidence Score"], errors='coerce').dropna()
+            
+            if confidence_scores.empty:
+                st.info("Tidak ada data 'Confidence Score' yang valid untuk dianalisis.")
+            else:
+                st.markdown("Ringkasan Statistik Deskriptif untuk **Confidence Score (%)**")
+                
+                # Tampilkan metrik utama
+                cols_metrik = st.columns(4)
+                cols_metrik[0].metric("Rata-rata", f"{confidence_scores.mean():.2f} %")
+                cols_metrik[1].metric("Median", f"{confidence_scores.median():.2f} %")
+                cols_metrik[2].metric("Minimum", f"{confidence_scores.min():.2f} %")
+                cols_metrik[3].metric("Maksimum", f"{confidence_scores.max():.2f} %")
+                
+                # Tampilkan tabel describe()
+                st.dataframe(confidence_scores.describe())
+
+                st.markdown("---")
+                st.subheader("Distribusi Confidence Score")
+                
+                try:
+                    # Buat bin untuk histogram (misal: 0-10, 10-20, ..., 90-100)
+                    # Kita gunakan pd.cut
+                    bins = pd.cut(confidence_scores, bins=range(0, 101, 10), right=True)
+                    
+                    # Hitung jumlah di setiap bin
+                    hist_data = bins.value_counts().sort_index()
+                    
+                    # Ubah nama index agar lebih mudah dibaca di chart
+                    hist_data.index = hist_data.index.astype(str)
+                    
+                    # Ubah nama Series agar ada label di chart
+                    hist_data.name = "Jumlah Dosen"
+                    
+                    st.bar_chart(hist_data)
+                    st.caption("Histogram yang menunjukkan jumlah dosen per rentang skor kepercayaan (interval 10%).")
+
+                except Exception as e:
+                    st.error(f"Gagal membuat histogram: {e}")
+    # --- END: BLOK KODE BARU UNTUK TAB 3 ---
