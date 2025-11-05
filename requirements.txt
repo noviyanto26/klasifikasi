@@ -2,6 +2,7 @@ streamlit
 pandas
 plotly
 matplotlib
+seaborn
 openai
 google-generativeai
 graphviz
