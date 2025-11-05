@@ -3,6 +3,7 @@ pandas
 plotly
 matplotlib
 seaborn
+wordcloud
 openai
 google-generativeai
 graphviz
