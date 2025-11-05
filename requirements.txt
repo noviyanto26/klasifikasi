@@ -1,6 +1,7 @@
 streamlit
 pandas
 plotly
+matplotlib
 openai
 google-generativeai
 graphviz
