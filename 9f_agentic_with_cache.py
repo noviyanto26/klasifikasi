@@ -119,7 +119,7 @@ def _call_gemini(client, model, temp, system, user):
             response_mime_type="application/json",
             max_output_tokens=MAX_OUT_TOKENS,
         ),
-        request_options={"timeout": 15.0} # <<<--- PERBAIKAN: Tambah timeout 15 detik
+        request_options={"timeout": 15.0}
     )
     content = resp.text or ""
     return _loads_json_strict(content)
@@ -276,7 +276,7 @@ def _github_headers():
 PROVIDER_CONFIG = {
     "OpenRouter": {
         "api_key_name": "OPENROUTER_API_KEY",
-        "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1", timeout=15.0), # <<<--- PERBAIKAN
+        "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1", timeout=15.0),
         "call_func": _call_openai_compatible,
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
@@ -286,7 +286,7 @@ PROVIDER_CONFIG = {
     },
     "Groq": {
         "api_key_name": "GROQ_API_KEY",
-        "init_func": lambda key: Groq(api_key=key, timeout=15.0), # <<<--- PERBAIKAN
+        "init_func": lambda key: Groq(api_key=key, timeout=15.0),
         "call_func": _call_openai_compatible,
         "model": "llama-3.1-8b-instant",
         "error_map": {
@@ -308,7 +308,7 @@ PROVIDER_CONFIG = {
     "GitHub": {
         "api_key_name": "GITHUB_API_KEY",
         "init_func": lambda key: OpenAI(
-            api_key=key, base_url="https://models.github.ai/inference", default_headers=_github_headers(), timeout=15.0 # <<<--- PERBAIKAN
+            api_key=key, base_url="https://models.github.ai/inference", default_headers=_github_headers(), timeout=15.0
         ),
         "call_func": _call_openai_compatible,
         "model": GITHUB_MODELS[0],
@@ -317,22 +317,19 @@ PROVIDER_CONFIG = {
             (APIError, "unknown_model"): ProviderUnavailableError,
         },
     },
-    "Ollama": {
-        "api_key_name": "OLLAMA_API_KEY",
-        "init_func": lambda key: OpenAI(base_url="http://localhost:11434/v1", api_key="ollama", timeout=15.0), # <<<--- PERBAIKAN
-        "call_func": _call_openai_compatible,
-        "model": "llama3.1",
-        "check_func": lambda: requests.get("http://localhost:11434", timeout=2).ok, # Check cepat 2 detik
-        "error_map": {},
-    },
+    # <<<--- PERUBAHAN: Blok "Ollama" dihapus
 }
 
-ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google", "Ollama"]
+# <<<--- PERUBAHAN: "Ollama" dihapus dari daftar ini
+ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google"]
 default_available = []
 for name in ALL_POSSIBLE_PROVIDERS:
     config = PROVIDER_CONFIG[name]
     api_key = os.getenv(config["api_key_name"]) or (st.secrets.get(config["api_key_name"]) if hasattr(st, "secrets") else None)
-    is_available = bool(api_key) or name == "Ollama"
+    
+    # <<<--- PERUBAHAN: Logika "or name == 'Ollama'" dihapus
+    is_available = bool(api_key) 
+    
     if is_available:
         try:
             if "check_func" in config and not config["check_func"]():
@@ -340,7 +337,6 @@ for name in ALL_POSSIBLE_PROVIDERS:
             else:
                 config["client"] = config["init_func"](api_key)
         except Exception as e:
-            # Tampilkan warning jika init gagal (misal timeout saat check_func)
             st.sidebar.warning(f"Gagal inisialisasi {name}: {e}")
             is_available = False
     config["is_available"] = is_available
@@ -452,10 +448,9 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
 
         except Exception as e:
             last_error = e
-            msg = str(e).lower() # Konversi ke lowercase untuk matching error
+            msg = str(e).lower()
             should_fallback = False
 
-            # Cek error timeout secara eksplisit
             if "timeout" in msg:
                 st.warning(f"⌛ {provider_name} timeout. Beralih...")
                 should_fallback = True
@@ -479,18 +474,15 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
                 st.warning(f"Provider {provider_name} returns a non-JSON response. Beralih...")
                 should_fallback = True
             
-            # <<<--- PERBAIKAN: Tangani error koneksi (cth: Ollama tidak jalan)
             if not should_fallback and ("connection error" in msg or "failed to connect" in msg):
                 st.warning(f"🔌 Gagal koneksi ke {provider_name}. Beralih...")
                 should_fallback = True
 
             if not should_fallback:
-                # Jika error tidak dikenal, jangan fallback, tapi tampilkan error
                 st.error(f"Error tak terduga dari {provider_name}: {e}")
                 st.warning("Menghentikan proses untuk dosen ini.")
-                return fallback_response # Kembalikan fallback agar loop dosen bisa lanjut
+                return fallback_response
 
-    # Jika semua provider gagal
     st.error(f"Semua provider gagal. Error terakhir: {last_error}")
     raise ProviderUnavailableError(f"All providers failed. Last error: {last_error}")
 
@@ -636,7 +628,6 @@ if st.session_state.get(PG + "df_hasil") is None:
         st.stop()
 
     with st.spinner("Reading files..."):
-        # Muat file sekali dan simpan di session state
         if PG + "dfs" not in st.session_state:
             st.session_state[PG + "dfs"] = {name: pd.read_excel(file) for name, file in files.items()}
         dfs = st.session_state[PG + "dfs"]
@@ -656,7 +647,6 @@ if st.session_state.get(PG + "df_hasil") is None:
     
     if cache_file is not None:
         try:
-            # Muat cache sekali
             if PG + "cached_df" not in st.session_state:
                 st.session_state[PG + "cached_df"] = pd.read_json(cache_file)
             cached_df = st.session_state[PG + "cached_df"]
