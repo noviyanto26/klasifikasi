@@ -300,7 +300,7 @@ def _github_headers():
 PROVIDER_CONFIG = {
     "OpenRouter": {
         "api_key_name": "OPENROUTER_API_KEY",
-        "init_func": lambda key: OpenAI(api_key=key, base_url="https.openrouter.ai/api/v1"),
+        "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1"),
         "call_func": _call_openai_compatible,
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
