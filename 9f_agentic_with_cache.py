@@ -23,7 +23,7 @@ from reportlab.lib.utils import ImageReader
 # ==========================================================
 load_dotenv()
 st.set_page_config(page_title="Agentic AI Classification - TaksoFolk", page_icon="🧠", layout="wide")
-PG = "pg9aa_"  # Prefix state
+PG = "pg9aa_"  # <--- PERBAIKAN: Spasi non-standar (nbsp) dihapus dari sini
 
 # <--- PERUBAHAN: Menambahkan state 'processing', 'hasil_partial', 'stop_requested'
 for k, v in [
@@ -276,7 +276,7 @@ def get_all_dosen_safely(dfs: Dict[str, pd.DataFrame]):
 # ==========================================================
 st.sidebar.header("⚙️ LLM Settings")
 
-# <--- PERUBAHAN: Variabel untuk menonaktifkan UI
+# <--- Variabel untuk menonaktifkan UI
 is_processing = st.session_state.get(PG + "processing", False)
 
 GITHUB_MODELS: List[str] = [
@@ -372,7 +372,7 @@ selected_providers = st.sidebar.multiselect(
     options=ALL_POSSIBLE_PROVIDERS,
     default=default_available,
     help="Program akan mencoba dari atas ke bawah jika terjadi error.",
-    disabled=is_processing # <--- PERUBAHAN: nonaktifkan saat proses
+    disabled=is_processing # <-- Logika BENAR: nonaktifkan saat proses
 )
 FALLBACK_ORDER = selected_providers
 AVAILABLE_PROVIDERS = [p for p in FALLBACK_ORDER if PROVIDER_CONFIG[p].get("is_available")]
@@ -399,7 +399,7 @@ GOOGLE_MODELS = [
 ]
 
 st.sidebar.subheader("Model Selection")
-# <--- PERUBAHAN: nonaktifkan semua widget saat proses
+# <--- Logika BENAR: nonaktifkan semua widget saat proses
 st.session_state[PG + "openrouter_model"] = st.sidebar.selectbox(
     "OpenRouter Models", options=OPENROUTER_MODELS, key=PG + "_or_model_widget",
     disabled=is_processing
@@ -560,7 +560,7 @@ def agentic_finalize(nama_dosen, draft, critique):
 # ==========================================================
 st.sidebar.header("📂 Upload Analysis File")
 files = {
-    # <--- PERUBAHAN: nonaktifkan saat proses
+    # <--- Logika BENAR: nonaktifkan saat proses
     name: st.sidebar.file_uploader(label, type=["xlsx"], key=f"{PG}{name}", disabled=is_processing)
     for name, label in [
         ("homebase", "Homebase Dosen"), ("pendidikan", "Riwayat Pendidikan"),
@@ -575,12 +575,12 @@ st.sidebar.subheader("📤 (Optional) Continue Session")
 cache_file = st.sidebar.file_uploader(
     "Upload Cache (cache_hasil.json)", type=["json"], key=PG + "cache_file",
     help="Upload file .json dari sesi sebelumnya untuk melanjutkan progres.",
-    disabled=is_processing # <--- PERUBAHAN: nonaktifkan saat proses
+    disabled=is_processing # <-- Logika BENAR: nonaktifkan saat proses
 )
 st.sidebar.markdown("---")
 
 c1, c2 = st.sidebar.columns(2)
-# <--- PERUBAHAN: nonaktifkan tombol 'Start' saat proses
+# <--- Logika BENAR: nonaktifkan tombol 'Start' saat proses
 if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True, disabled=is_processing):
     st.session_state[PG + "started"] = True
     for k in [PG + "df_hasil", PG + "excel_bytes", PG + "pdf_bytes", PG + "json_cache_bytes"]:
@@ -591,7 +591,7 @@ if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True, 
     st.session_state[PG + "stop_requested"] = False
     st.session_state[PG + "processing"] = True  # <-- Mulai proses
 
-# <--- PERUBAHAN: nonaktifkan tombol 'Reset' saat proses
+# <--- Logika BENAR: nonaktifkan tombol 'Reset' saat proses
 if c2.button("🔄 Reset", key=PG + "reset", use_container_width=True, disabled=is_processing):
     for k in list(st.session_state.keys()):
         if k.startswith(PG):
@@ -643,7 +643,7 @@ if st.session_state.get(PG + "df_hasil") is None:
 
     progress_bar = st.progress(0, text="Memulai analisis...")
     
-    # <--- PERUBAHAN: Tombol Stop HANYA aktif saat 'is_processing' = True
+    # <--- Logika BENAR: Tombol Stop HANYA aktif saat 'is_processing' = True
     if st.button("🛑 Stop Processing", key=PG + "stop_btn", disabled=not is_processing):
         st.session_state[PG + "stop_requested"] = True
         st.warning("Permintaan berhenti... Proses akan dihentikan dan menyimpan hasil parsial setelah dosen saat ini selesai.")
@@ -670,7 +670,7 @@ if st.session_state.get(PG + "df_hasil") is None:
         total_to_process = len(dosen_to_process)
         for i, dosen in enumerate(sorted(dosen_to_process), 1):
             
-            # <--- PERUBAHAN: Cek flag stop
+            # <--- Cek flag stop
             if st.session_state[PG + "stop_requested"]:
                 st.warning("Proses dihentikan oleh pengguna. Menyimpan hasil parsial...")
                 break  # Keluar dari loop
@@ -698,7 +698,7 @@ if st.session_state.get(PG + "df_hasil") is None:
                 safe_confidence_score = safe_confidence_score / 100.0
             # --- AKHIR PERBAIKAN ---
 
-            # <--- PERUBAHAN: Simpan ke session_state
+            # <--- Simpan ke session_state
             st.session_state[PG + "hasil_partial"].append(
                 {
                     "Lecturer Name": dosen,
@@ -721,13 +721,12 @@ if st.session_state.get(PG + "df_hasil") is None:
 
     except Exception as e:
         st.error(f"🛑 Proses dihentikan karena error: {e}")
-        # <--- PERUBAHAN: Baca len dari session_state
         st.warning(f"Menyimpan hasil parsial untuk {len(st.session_state[PG + 'hasil_partial'])} dosen yang baru diproses.")
     
     finally:
         progress_bar.empty()
         
-        # <--- PERUBAHAN: Baca hasil dari session_state
+        # <--- Baca hasil dari session_state
         df_new_results = pd.DataFrame(st.session_state[PG + "hasil_partial"]) if st.session_state[PG + "hasil_partial"] else pd.DataFrame()
         
         if 'cached_df' not in locals():
@@ -757,7 +756,7 @@ if st.session_state.get(PG + "df_hasil") is None:
         else:
             st.session_state[PG + "df_hasil"] = None
         
-        # <--- PERUBAHAN: Reset semua flag setelah selesai/gagal/stop
+        # <--- Reset semua flag setelah selesai/gagal/stop
         st.session_state[PG + "stop_requested"] = False
         st.session_state[PG + "hasil_partial"] = []
         st.session_state[PG + "processing"] = False # <-- Selesai, UI kembali normal
@@ -794,7 +793,6 @@ if df_hasil is not None:
                     "cache_hasil.json",
                     key=PG + "dl_json_cache",
                     help="Simpan file ini! Upload file ini di sesi berikutnya untuk melanjutkan progres.",
-                    # <--- PERBAIKAN DI SINI
                     use_container_width=True 
                 )
 
