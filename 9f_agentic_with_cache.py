@@ -37,24 +37,24 @@ for k, v in [
 ]:
     st.session_state.setdefault(k, v)
 
-# Tentukan state "sedang memproses"
-processing_active = (
-    st.session_state.get(PG + "started", False) and
-    st.session_state.get(PG + "df_hasil") is None
-)
-
 # ==========================================================
-# JSON SANITIZER
+# JSON SANITIZER (mencegah: Unterminated string / output non-JSON)
 # ==========================================================
 def _extract_json_block(text: str) -> Optional[str]:
     if not text:
         return None
+    
+    # 1) Prioritaskan code-fence ```json ... ``` (mencari { } atau [ ])
     m = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, flags=re.DOTALL)
     if m:
         return m.group(1)
+        
+    # 2) Jika tidak ada code fence, cari blok { } atau [ ] pertama yang valid
     start_brace = text.find("{")
     start_bracket = text.find("[")
+    
     start_index = -1
+    
     if start_brace != -1 and (start_bracket == -1 or start_brace < start_bracket):
         start_index = start_brace
         end_char = "}"
@@ -63,18 +63,27 @@ def _extract_json_block(text: str) -> Optional[str]:
         end_char = "]"
     else:
         return None
+
     end_index = text.rfind(end_char)
+    
     if end_index > start_index:
         return text[start_index : end_index + 1]
+        
     return None
 
-def _loads_json_strict(text: str) -> Any:
+def _loads_json_strict(text: str) -> Any: # Diubah dari -> dict ke -> Any
+    """
+    Mencoba mem-parsing teks sebagai JSON.
+    Mampu menangani code fence, koma buntut, dan kutip non-standar.
+    Mengembalikan dict ATAU list.
+    """
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         cleaned = _extract_json_block(text)
         if not cleaned:
             raise
+        
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
@@ -119,7 +128,6 @@ def _call_gemini(client, model, temp, system, user):
             response_mime_type="application/json",
             max_output_tokens=MAX_OUT_TOKENS,
         ),
-        request_options={"timeout": 15.0}
     )
     content = resp.text or ""
     return _loads_json_strict(content)
@@ -128,7 +136,7 @@ class ProviderQuotaError(Exception): ...
 class ProviderUnavailableError(Exception): ...
 
 # ==========================================================
-# UTIL & VISUAL
+# UTIL & VISUAL (DIDEFINISIKAN SEBELUM DIPAKAI)
 # ==========================================================
 def _safe_float(value: Any) -> float:
     if isinstance(value, (int, float)):
@@ -203,10 +211,14 @@ def export_trees_to_pdf(df_hasil: pd.DataFrame, df_mapping: pd.DataFrame) -> io.
             img_data = io.BytesIO(dot.pipe(format="png"))
             img = ImageReader(img_data)
             iw, ih = img.getSize()
+            
             scale = min((width - 2 * margin) / iw, (height - 2 * margin - 30) / ih, 1.0)
             dw, dh = iw * scale, ih * scale
+            
             y_pos = height - margin - 30 - dh
+            
             c.drawImage(img, margin, y_pos, width=dw, height=dh, preserveAspectRatio=True)
+
         except Exception:
             c.drawString(margin, height - margin - 24, "Gagal membuat visual.")
         c.showPage()
@@ -216,6 +228,7 @@ def export_trees_to_pdf(df_hasil: pd.DataFrame, df_mapping: pd.DataFrame) -> io.
 
 def collect_all_evidence(dosen: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Dict[str, Any], List]:
     evidence = {}
+
     def _pick_first_match(df, col):
         if "Nama Dosen" not in df.columns:
             return None, 0.0
@@ -223,18 +236,22 @@ def collect_all_evidence(dosen: str, dfs: Dict[str, pd.DataFrame]) -> Tuple[Dict
         if not sub.empty:
             return sub.iloc[0].get(f"Best Match {col}"), float(sub.iloc[0].get(f"Score {col}", 0.0))
         return None, 0.0
+
     evidence["homebase"], hb_score = _pick_first_match(dfs["homebase"], "Cabang Ilmu")
     evidence["pendidikan"], pd_score = _pick_first_match(dfs["pendidikan"], "Cabang Ilmu")
     evidence["mengajar"], mg_score = _pick_first_match(dfs["mengajar"], "Cabang Ilmu")
+
     def _get_tags(df_tag):
         if "Nama Dosen" in df_tag.columns and "Tag" in df_tag.columns:
             sub = df_tag[df_tag["Nama Dosen"].astype(str) == dosen]
             if not sub.empty:
                 return sorted(list(set(sub["Tag"].dropna().astype(str).tolist())))
         return []
+
     evidence["publikasi_tags"] = _get_tags(dfs["publikasi"])
     evidence["pengabdian_tags"] = _get_tags(dfs["pengabdian"])
     evidence["scholar_tags"] = _get_tags(dfs["scholar"])
+
     candidates = sorted(
         [(evidence[k], s, k) for k, s in [("homebase", hb_score), ("pendidikan", pd_score), ("mengajar", mg_score)] if evidence[k]],
         key=lambda x: x[1],
@@ -276,7 +293,7 @@ def _github_headers():
 PROVIDER_CONFIG = {
     "OpenRouter": {
         "api_key_name": "OPENROUTER_API_KEY",
-        "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1", timeout=15.0),
+        "init_func": lambda key: OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1"),
         "call_func": _call_openai_compatible,
         "model": "meta-llama/llama-3-8b-instruct",
         "error_map": {
@@ -286,7 +303,7 @@ PROVIDER_CONFIG = {
     },
     "Groq": {
         "api_key_name": "GROQ_API_KEY",
-        "init_func": lambda key: Groq(api_key=key, timeout=15.0),
+        "init_func": lambda key: Groq(api_key=key),
         "call_func": _call_openai_compatible,
         "model": "llama-3.1-8b-instant",
         "error_map": {
@@ -308,7 +325,7 @@ PROVIDER_CONFIG = {
     "GitHub": {
         "api_key_name": "GITHUB_API_KEY",
         "init_func": lambda key: OpenAI(
-            api_key=key, base_url="https://models.github.ai/inference", default_headers=_github_headers(), timeout=15.0
+            api_key=key, base_url="https://models.github.ai/inference", default_headers=_github_headers(),
         ),
         "call_func": _call_openai_compatible,
         "model": GITHUB_MODELS[0],
@@ -317,27 +334,29 @@ PROVIDER_CONFIG = {
             (APIError, "unknown_model"): ProviderUnavailableError,
         },
     },
-    # <<<--- PERUBAHAN: Blok "Ollama" dihapus
+    "Ollama": {
+        "api_key_name": "OLLAMA_API_KEY",
+        "init_func": lambda key: OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
+        "call_func": _call_openai_compatible,
+        "model": "llama3.1",
+        "check_func": lambda: requests.get("http://localhost:11434", timeout=2).ok,
+        "error_map": {},
+    },
 }
 
-# <<<--- PERUBAHAN: "Ollama" dihapus dari daftar ini
-ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google"]
+ALL_POSSIBLE_PROVIDERS = ["GitHub", "Groq", "OpenRouter", "Google", "Ollama"]
 default_available = []
 for name in ALL_POSSIBLE_PROVIDERS:
     config = PROVIDER_CONFIG[name]
     api_key = os.getenv(config["api_key_name"]) or (st.secrets.get(config["api_key_name"]) if hasattr(st, "secrets") else None)
-    
-    # <<<--- PERUBAHAN: Logika "or name == 'Ollama'" dihapus
-    is_available = bool(api_key) 
-    
+    is_available = bool(api_key) or name == "Ollama"
     if is_available:
         try:
             if "check_func" in config and not config["check_func"]():
                 is_available = False
             else:
                 config["client"] = config["init_func"](api_key)
-        except Exception as e:
-            st.sidebar.warning(f"Gagal inisialisasi {name}: {e}")
+        except Exception:
             is_available = False
     config["is_available"] = is_available
     if is_available:
@@ -348,7 +367,6 @@ selected_providers = st.sidebar.multiselect(
     options=ALL_POSSIBLE_PROVIDERS,
     default=default_available,
     help="Program akan mencoba dari atas ke bawah jika terjadi error.",
-    disabled=processing_active
 )
 FALLBACK_ORDER = selected_providers
 AVAILABLE_PROVIDERS = [p for p in FALLBACK_ORDER if PROVIDER_CONFIG[p].get("is_available")]
@@ -376,34 +394,26 @@ GOOGLE_MODELS = [
 
 st.sidebar.subheader("Model Selection")
 st.session_state[PG + "openrouter_model"] = st.sidebar.selectbox(
-    "OpenRouter Models", options=OPENROUTER_MODELS, key=PG + "_or_model_widget",
-    disabled=processing_active
+    "OpenRouter Models", options=OPENROUTER_MODELS, key=PG + "_or_model_widget"
 )
 st.session_state[PG + "groq_model"] = st.sidebar.selectbox(
-    "Groq Models", options=GROQ_MODELS, key=PG + "_groq_model_widget",
-    disabled=processing_active
+    "Groq Models", options=GROQ_MODELS, key=PG + "_groq_model_widget"
 )
 st.session_state[PG + "github_model"] = st.sidebar.selectbox(
-    "GitHub Models", options=GITHUB_MODELS, key=PG + "_github_model_widget",
-    disabled=processing_active
+    "GitHub Models", options=GITHUB_MODELS, key=PG + "_github_model_widget"
 )
 st.session_state[PG + "google_model"] = st.sidebar.selectbox(
-    "Google Models", options=GOOGLE_MODELS, key=PG + "_google_model_widget",
-    disabled=processing_active
+    "Google Models", options=GOOGLE_MODELS, key=PG + "_google_model_widget"
 )
 st.sidebar.caption("Make sure API keys are set in .env or Streamlit Secrets.")
-
 st.session_state[PG + "temp"] = st.sidebar.slider(
     "Temperature", 0.0, 1.0, 0.2, 0.1, key=PG + "_temp_widget",
-    help="0.0: Konsisten. 1.0: Kreatif.",
-    disabled=processing_active
+    help="0.0: Konsisten. 1.0: Kreatif."
 )
 max_self_reflect = st.sidebar.slider(
     "Max. Self-Reflect cycle", 0, 2, 1, 1, key=PG + "cycles",
-    help="Meningkatkan kualitas, tapi memperlambat proses.",
-    disabled=processing_active
+    help="Meningkatkan kualitas, tapi memperlambat proses."
 )
-
 
 # ==========================================================
 # LOGIKA INFERENSI + FALLBACK
@@ -448,18 +458,14 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
 
         except Exception as e:
             last_error = e
-            msg = str(e).lower()
+            msg = str(e)
             should_fallback = False
 
-            if "timeout" in msg:
-                st.warning(f"⌛ {provider_name} timeout. Beralih...")
-                should_fallback = True
-
             status_402 = getattr(e, "status_code", None) == 402 or "code': 402" in msg or 'code": 402' in msg or " 402 " in msg
-            if provider_name == "OpenRouter" and ("insufficient credits" in msg or "insufficient_credits" in msg or status_402):
+            if provider_name == "OpenRouter" and ("Insufficient credits" in msg or status_402):
                 st.warning("⚠️ OpenRouter: Insufficient credits (402). Beralih...")
                 should_fallback = True
-            if provider_name == "GitHub" and ("unknown model" in msg or "unknown_model" in msg):
+            if provider_name == "GitHub" and ("Unknown model" in msg or "unknown_model" in msg):
                 st.warning("⚠️ GitHub Models: Unknown model. Beralih...")
                 should_fallback = True
 
@@ -473,42 +479,23 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
             if not should_fallback and isinstance(e, json.JSONDecodeError):
                 st.warning(f"Provider {provider_name} returns a non-JSON response. Beralih...")
                 should_fallback = True
-            
-            if not should_fallback and ("connection error" in msg or "failed to connect" in msg):
-                st.warning(f"🔌 Gagal koneksi ke {provider_name}. Beralih...")
-                should_fallback = True
 
             if not should_fallback:
-                st.error(f"Error tak terduga dari {provider_name}: {e}")
-                st.warning("Menghentikan proses untuk dosen ini.")
-                return fallback_response
+                raise e
 
-    st.error(f"Semua provider gagal. Error terakhir: {last_error}")
     raise ProviderUnavailableError(f"All providers failed. Last error: {last_error}")
-
 
 # ==========================================================
 # AGENS (PLAN → DRAFT → CRITIQUE → FINALIZE)
 # ==========================================================
-FALLBACK_JSON = {
-    "final_field": "Gagal (Error)", 
-    "alternatives": [], 
-    "confidence": 0.0, 
-    "reasoning": "Gagal memproses AI. Periksa log error.", 
-    "supporting_sources": {},
-    "_used_provider": "N/A (Error)"
-}
-
 def _ekstrak_nama_bidang(data: Any) -> Optional[str]:
+    """
+    Mengekstrak nama bidang dari berbagai format respons LLM yang tidak terduga.
+    """
     if isinstance(data, str) and data.strip():
         return data
     if isinstance(data, dict):
-        for key in ["field", "final_field", "bidang_ilmu", "nama_bidang"]:
-            if key in data and isinstance(data[key], str):
-                return data[key]
-        for value in data.values():
-            if isinstance(value, str):
-                return value
+        return data.get("field")
     if isinstance(data, list) and len(data) > 0:
         return _ekstrak_nama_bidang(data[0])
     return None
@@ -520,12 +507,7 @@ def agentic_plan(nama_dosen, candidates, evidence):
         "Output HANYA JSON valid: {\"steps\": list, \"focus_terms\": list}"
     )
     system_prompt = "Anda adalah AI perencana."
-    try:
-        return proses_dengan_ai(system_prompt, user_prompt, {"steps": ["Analisis manual"], "focus_terms": []})
-    except Exception as e:
-        st.warning(f"Gagal pada tahap PLAN untuk {nama_dosen}: {e}. Melanjutkan dengan plan default.")
-        return {"steps": ["Analisis manual (gagal plan)"], "focus_terms": []}
-
+    return proses_dengan_ai(system_prompt, user_prompt, {"steps": ["Analisis manual"], "focus_terms": []})
 
 def agentic_draft(nama_dosen, evidence, candidates, plan):
     cand_text = "\n".join([f"- {l} (sumber: {s}, skor: {sc:.2f})" for l, sc, s in candidates])
@@ -538,12 +520,10 @@ def agentic_draft(nama_dosen, evidence, candidates, plan):
         '{"final_field": str, "alternatives": list, "confidence": number, "reasoning": str, "supporting_sources": dict}'
     )
     system_prompt = "Anda adalah pakar klasifikasi taksonomi keilmuan."
-    try:
-        return proses_dengan_ai(system_prompt, user_prompt, FALLBACK_JSON)
-    except Exception as e:
-        st.warning(f"Gagal pada tahap DRAFT untuk {nama_dosen}: {e}. Menggunakan fallback.")
-        return FALLBACK_JSON.copy()
-
+    return proses_dengan_ai(
+        system_prompt, user_prompt,
+        {"final_field": "Gagal", "alternatives": [], "confidence": 0.0, "reasoning": "Gagal", "supporting_sources": {}},
+    )
 
 def agentic_critique(nama_dosen, draft):
     user_prompt = (
@@ -551,11 +531,7 @@ def agentic_critique(nama_dosen, draft):
         "Output HANYA JSON valid: {\"issues\": list, \"suggestions\": list}"
     )
     system_prompt = "Anda AI kritikus."
-    try:
-        return proses_dengan_ai(system_prompt, user_prompt, {"issues": [], "suggestions": []})
-    except Exception as e:
-        st.warning(f"Gagal pada tahap CRITIQUE untuk {nama_dosen}: {e}. Melewatkan kritik.")
-        return {"issues": ["Gagal critique"], "suggestions": ["Periksa draf manual"]}
+    return proses_dengan_ai(system_prompt, user_prompt, {"issues": [], "suggestions": []})
 
 def agentic_finalize(nama_dosen, draft, critique):
     user_prompt = (
@@ -564,17 +540,12 @@ def agentic_finalize(nama_dosen, draft, critique):
         "Perbaiki draf berdasarkan kritik. Jawab HANYA JSON valid menggunakan struktur draf."
     )
     system_prompt = "Anda AI finalis."
-    try:
-        return proses_dengan_ai(system_prompt, user_prompt, draft)
-    except Exception as e:
-        st.warning(f"Gagal pada tahap FINALIZE untuk {nama_dosen}: {e}. Menggunakan draf awal.")
-        return draft
+    return proses_dengan_ai(system_prompt, user_prompt, draft)
 
 # ==========================================================
 # INPUT DATA UTAMA
 # ==========================================================
 st.sidebar.header("📂 Upload Analysis File")
-
 files = {
     name: st.sidebar.file_uploader(label, type=["xlsx"], key=f"{PG}{name}")
     for name, label in [
@@ -587,26 +558,23 @@ files = {
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📤 (Optional) Continue Session")
-
 cache_file = st.sidebar.file_uploader(
     "Upload Cache (cache_hasil.json)", type=["json"], key=PG + "cache_file",
     help="Upload file .json dari sesi sebelumnya untuk melanjutkan progres."
 )
-
 st.sidebar.markdown("---")
 
 c1, c2 = st.sidebar.columns(2)
-if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True, disabled=processing_active):
+if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True):
     st.session_state[PG + "started"] = True
     for k in [PG + "df_hasil", PG + "excel_bytes", PG + "pdf_bytes", PG + "json_cache_bytes"]:
         st.session_state[k] = None
     
+    # <-- PERUBAHAN: Reset hasil parsial & flag stop
     st.session_state[PG + "hasil_partial"] = []
     st.session_state[PG + "stop_requested"] = False
-    st.rerun() 
-    
 
-if c2.button("🔄 Reset", key=PG + "reset", use_container_width=True, disabled=processing_active):
+if c2.button("🔄 Reset", key=PG + "reset", use_container_width=True):
     for k in list(st.session_state.keys()):
         if k.startswith(PG):
             del st.session_state[k]
@@ -621,25 +589,17 @@ if not st.session_state.get(PG + "started"):
 # PROSES UTAMA
 # ==========================================================
 if st.session_state.get(PG + "df_hasil") is None:
-    
     if not all(files.values()):
         st.error("❌ Please upload all 7 files.")
-        st.session_state[PG + "started"] = False
         st.stop()
 
     with st.spinner("Reading files..."):
-        if PG + "dfs" not in st.session_state:
-            st.session_state[PG + "dfs"] = {name: pd.read_excel(file) for name, file in files.items()}
-        dfs = st.session_state[PG + "dfs"]
-        
-        if st.session_state.get(PG + "df_mapping") is None:
-             st.session_state[PG + "df_mapping"] = dfs["mapping"]
-        
+        dfs = {name: pd.read_excel(file) for name, file in files.items()}
+        st.session_state[PG + "df_mapping"] = dfs["mapping"]
         all_dosen = get_all_dosen_safely(dfs)
 
     if not all_dosen.any():
         st.error("No lecturer names were found.")
-        st.session_state[PG + "started"] = False
         st.stop()
 
     cached_df = pd.DataFrame()
@@ -647,10 +607,7 @@ if st.session_state.get(PG + "df_hasil") is None:
     
     if cache_file is not None:
         try:
-            if PG + "cached_df" not in st.session_state:
-                st.session_state[PG + "cached_df"] = pd.read_json(cache_file)
-            cached_df = st.session_state[PG + "cached_df"]
-                
+            cached_df = pd.read_json(cache_file) 
             if "Lecturer Name" in cached_df.columns:
                 processed_dosen = set(cached_df["Lecturer Name"].astype(str))
                 dosen_to_process = [d for d in all_dosen if d not in processed_dosen]
@@ -661,13 +618,13 @@ if st.session_state.get(PG + "df_hasil") is None:
         except Exception as e:
             st.warning(f"Gagal membaca cache JSON: {e}. Memproses ulang.")
             dosen_to_process = all_dosen
-            st.session_state.pop(PG + "cached_df", None)
     else:
         st.info(f"Cache tidak di-upload. Memproses {len(dosen_to_process)} dosen dari awal.")
-        st.session_state.pop(PG + "cached_df", None)
 
+    # [HAPUS] hasil = [] -> dipindah ke session_state
     progress_bar = st.progress(0, text="Memulai analisis...")
     
+    # <-- PERUBAHAN: Tambah Tombol Stop
     if st.button("🛑 Stop Processing", key=PG + "stop_btn"):
         st.session_state[PG + "stop_requested"] = True
         st.warning("Permintaan berhenti... Proses akan dihentikan dan menyimpan hasil parsial setelah dosen saat ini selesai.")
@@ -682,44 +639,45 @@ if st.session_state.get(PG + "df_hasil") is None:
             cached_df.to_excel(out_xlsx, index=False, engine="openpyxl")
             st.session_state[PG + "excel_bytes"] = out_xlsx.getvalue()
             st.session_state[PG + "pdf_bytes"] = export_trees_to_pdf(cached_df, dfs["mapping"]).getvalue()
+            
             json_string = cached_df.to_json(orient='records', indent=4)
             st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
          st.rerun()
 
-    # --- BLOK PROSES UTAMA ---
+    # --- INI ADALAH BLOK try...finally YANG BENAR DAN LENGKAP ---
     try:
         total_to_process = len(dosen_to_process)
         for i, dosen in enumerate(sorted(dosen_to_process), 1):
             
+            # <-- PERUBAHAN: Cek flag stop
             if st.session_state[PG + "stop_requested"]:
                 st.warning("Proses dihentikan oleh pengguna. Menyimpan hasil parsial...")
-                break 
+                break  # Keluar dari loop
 
             evidence, candidates = collect_all_evidence(dosen, dfs)
-            
             plan = agentic_plan(dosen, candidates, evidence)
             draft = agentic_draft(dosen, evidence, candidates, plan)
 
             final_decision = draft
             for _ in range(max_self_reflect):
-                if final_decision.get("final_field") == "Gagal (Error)":
-                    break
                 critique = agentic_critique(dosen, final_decision)
                 final_decision = agentic_finalize(dosen, final_decision, critique)
 
             alts = final_decision.get("alternatives", [])
             bidang_ilmu_1 = _ekstrak_nama_bidang(final_decision.get("final_field"))
             bidang_ilmu_2 = _ekstrak_nama_bidang(alts[0] if alts else None)
-            
             if bidang_ilmu_1 and bidang_ilmu_1 == bidang_ilmu_2:
                 bidang_ilmu_2 = None
 
             confidence_val = final_decision.get("confidence")
             safe_confidence_score = _safe_float(confidence_val)
 
+            # --- PERBAIKAN BUG "8000" ---
             if safe_confidence_score > 1.0:
                 safe_confidence_score = safe_confidence_score / 100.0
+            # --- AKHIR PERBAIKAN ---
 
+            # <-- PERUBAHAN: Simpan ke session_state
             st.session_state[PG + "hasil_partial"].append(
                 {
                     "Lecturer Name": dosen,
@@ -734,24 +692,25 @@ if st.session_state.get(PG + "df_hasil") is None:
 
             elapsed = time.time() - start_time
             eta_formatted = "Menghitung..."
-            if i > 0:
-                avg_time_per_dosen = elapsed / i
-                eta_seconds = (total_to_process - i) * avg_time_per_dosen
+            if i > 5:
+                eta_seconds = (total_to_process - i) * (elapsed / i) if i > 0 else 0
                 eta_formatted = format_eta(int(eta_seconds))
 
             progress_bar.progress(i / total_to_process, text=f"Menganalisis {i}/{total_to_process}: {dosen} | ETA: {eta_formatted}")
 
     except Exception as e:
-        st.error(f"🛑 Proses dihentikan karena error fatal: {e}")
-        st.exception(e) 
+        st.error(f"🛑 Proses dihentikan karena error: {e}")
+        # <-- PERUBAHAN: Baca len dari session_state
         st.warning(f"Menyimpan hasil parsial untuk {len(st.session_state[PG + 'hasil_partial'])} dosen yang baru diproses.")
     
     finally:
         progress_bar.empty()
         
+        # <-- PERUBAHAN: Baca hasil dari session_state
         df_new_results = pd.DataFrame(st.session_state[PG + "hasil_partial"]) if st.session_state[PG + "hasil_partial"] else pd.DataFrame()
         
-        cached_df = st.session_state.get(PG + "cached_df", pd.DataFrame())
+        if 'cached_df' not in locals():
+            cached_df = pd.DataFrame() 
             
         if not df_new_results.empty or not cached_df.empty:
             with st.spinner("Menggabungkan hasil baru dengan cache dan membuat file..."):
@@ -775,17 +734,11 @@ if st.session_state.get(PG + "df_hasil") is None:
                 json_string = df_hasil.to_json(orient='records', indent=4)
                 st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
         else:
-            st.session_state[PG + "df_hasil"] = pd.DataFrame()
-            st.warning("Tidak ada hasil baru yang diproses.")
-
+            st.session_state[PG + "df_hasil"] = None
         
+        # <-- PERUBAHAN: Reset flag dan hasil parsial
         st.session_state[PG + "stop_requested"] = False
         st.session_state[PG + "hasil_partial"] = []
-        
-        st.session_state.pop(PG + "dfs", None)
-        st.session_state.pop(PG + "cached_df", None)
-        
-        st.rerun() 
 
 # ==========================================================
 # OUTPUT UI
@@ -794,7 +747,6 @@ df_hasil = st.session_state.get(PG + "df_hasil")
 df_mapping = st.session_state.get(PG + "df_mapping")
 
 if df_hasil is not None:
-    st.success(f"Analisis Selesai. Menampilkan {len(df_hasil)} total data dosen.")
     tab_titles = ["📊 Results Table", "🌳 Taxo-Folk Tree", "📈 Statistics"]
     tab1, tab2, tab3 = st.tabs(tab_titles)
     
@@ -832,17 +784,10 @@ if df_hasil is not None:
                 "pohon_taksofolk_parsial.pdf",
                 key=PG + "dl_pdf",
             )
-        
-        df_mapping_to_use = df_mapping if df_mapping is not None else st.session_state.get(PG + "df_mapping")
-        
-        if df_mapping_to_use is not None:
-            for _, row in df_hasil.iterrows():
-                with st.expander(f"👨‍🏫 {row['Lecturer Name']}"):
-                    dot = build_taksofolk_tree(row["Lecturer Name"], row.get("Field of Science 1"), row.get("Field of Science 2"), df_mapping_to_use)
-                    st.graphviz_chart(dot)
-        else:
-            st.warning("File mapping tidak ditemukan di session state untuk generate pohon.")
-
+        for _, row in df_hasil.iterrows():
+            with st.expander(f"👨‍🏫 {row['Lecturer Name']}"):
+                dot = build_taksofolk_tree(row["Lecturer Name"], row.get("Field of Science 1"), row.get("Field of Science 2"), df_mapping)
+                st.graphviz_chart(dot)
 
     with tab3:
         st.subheader("📈 Confidence Score Statistics")
