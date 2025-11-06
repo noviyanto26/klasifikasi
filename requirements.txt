@@ -16,4 +16,5 @@ groq
 rapidfuzz
 scikit-learn
 xlsxwriter
+networkx
 
