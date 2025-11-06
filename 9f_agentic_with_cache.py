@@ -32,6 +32,8 @@ for k, v in [
     (PG + "excel_bytes", None),
     (PG + "pdf_bytes", None),
     (PG + "json_cache_bytes", None),
+    (PG + "hasil_partial", []),  # <-- Diperlukan untuk stop
+    (PG + "stop_requested", False), # <-- Diperlukan untuk stop
 ]:
     st.session_state.setdefault(k, v)
 
@@ -567,6 +569,11 @@ if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True):
     st.session_state[PG + "started"] = True
     for k in [PG + "df_hasil", PG + "excel_bytes", PG + "pdf_bytes", PG + "json_cache_bytes"]:
         st.session_state[k] = None
+    
+    # <-- PERUBAHAN: Reset hasil parsial & flag stop
+    st.session_state[PG + "hasil_partial"] = []
+    st.session_state[PG + "stop_requested"] = False
+
 if c2.button("🔄 Reset", key=PG + "reset", use_container_width=True):
     for k in list(st.session_state.keys()):
         if k.startswith(PG):
@@ -614,8 +621,14 @@ if st.session_state.get(PG + "df_hasil") is None:
     else:
         st.info(f"Cache tidak di-upload. Memproses {len(dosen_to_process)} dosen dari awal.")
 
-    hasil = []
+    # [HAPUS] hasil = [] -> dipindah ke session_state
     progress_bar = st.progress(0, text="Memulai analisis...")
+    
+    # <-- PERUBAHAN: Tambah Tombol Stop
+    if st.button("🛑 Stop Processing", key=PG + "stop_btn"):
+        st.session_state[PG + "stop_requested"] = True
+        st.warning("Permintaan berhenti... Proses akan dihentikan dan menyimpan hasil parsial setelah dosen saat ini selesai.")
+    
     start_time = time.time()
 
     if len(dosen_to_process) == 0:
@@ -635,6 +648,12 @@ if st.session_state.get(PG + "df_hasil") is None:
     try:
         total_to_process = len(dosen_to_process)
         for i, dosen in enumerate(sorted(dosen_to_process), 1):
+            
+            # <-- PERUBAHAN: Cek flag stop
+            if st.session_state[PG + "stop_requested"]:
+                st.warning("Proses dihentikan oleh pengguna. Menyimpan hasil parsial...")
+                break  # Keluar dari loop
+
             evidence, candidates = collect_all_evidence(dosen, dfs)
             plan = agentic_plan(dosen, candidates, evidence)
             draft = agentic_draft(dosen, evidence, candidates, plan)
@@ -658,7 +677,8 @@ if st.session_state.get(PG + "df_hasil") is None:
                 safe_confidence_score = safe_confidence_score / 100.0
             # --- AKHIR PERBAIKAN ---
 
-            hasil.append(
+            # <-- PERUBAHAN: Simpan ke session_state
+            st.session_state[PG + "hasil_partial"].append(
                 {
                     "Lecturer Name": dosen,
                     "Field of Science 1": bidang_ilmu_1,
@@ -680,12 +700,14 @@ if st.session_state.get(PG + "df_hasil") is None:
 
     except Exception as e:
         st.error(f"🛑 Proses dihentikan karena error: {e}")
-        st.warning(f"Menyimpan hasil parsial untuk {len(hasil)} dosen yang baru diproses.")
+        # <-- PERUBAHAN: Baca len dari session_state
+        st.warning(f"Menyimpan hasil parsial untuk {len(st.session_state[PG + 'hasil_partial'])} dosen yang baru diproses.")
     
     finally:
         progress_bar.empty()
         
-        df_new_results = pd.DataFrame(hasil) if hasil else pd.DataFrame()
+        # <-- PERUBAHAN: Baca hasil dari session_state
+        df_new_results = pd.DataFrame(st.session_state[PG + "hasil_partial"]) if st.session_state[PG + "hasil_partial"] else pd.DataFrame()
         
         if 'cached_df' not in locals():
             cached_df = pd.DataFrame() 
@@ -713,6 +735,10 @@ if st.session_state.get(PG + "df_hasil") is None:
                 st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
         else:
             st.session_state[PG + "df_hasil"] = None
+        
+        # <-- PERUBAHAN: Reset flag dan hasil parsial
+        st.session_state[PG + "stop_requested"] = False
+        st.session_state[PG + "hasil_partial"] = []
 
 # ==========================================================
 # OUTPUT UI
@@ -746,7 +772,7 @@ if df_hasil is not None:
                     "cache_hasil.json",
                     key=PG + "dl_json_cache",
                     help="Simpan file ini! Upload file ini di sesi berikutnya untuk melanjutkan progres.",
-                    use_container_width=True
+                    use_container_tambah=True
                 )
 
     with tab2:
