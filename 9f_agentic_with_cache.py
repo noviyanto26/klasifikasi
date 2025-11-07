@@ -32,8 +32,9 @@ for k, v in [
     (PG + "excel_bytes", None),
     (PG + "pdf_bytes", None),
     (PG + "json_cache_bytes", None),
-    (PG + "hasil_partial", []),  # <-- Diperlukan untuk stop
-    (PG + "stop_requested", False), # <-- Diperlukan untuk stop
+    (PG + "hasil_partial", []),
+    (PG + "stop_requested", False),
+    (PG + "current_provider_index", 0), # <--- PERUBAHAN 1: Menambahkan pelacak provider
 ]:
     st.session_state.setdefault(k, v)
 
@@ -416,15 +417,28 @@ max_self_reflect = st.sidebar.slider(
 )
 
 # ==========================================================
-# LOGIKA INFERENSI + FALLBACK
+# LOGIKA INFERENSI + FALLBACK ( <--- INI ADALAH PERUBAHAN UTAMA)
 # ==========================================================
 def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Dict) -> Dict:
     if not AVAILABLE_PROVIDERS:
         st.error("No AI provider selected or available.")
         st.stop()
 
+    # 1. Dapatkan & validasi indeks awal dari session state
+    current_index = st.session_state.get(PG + "current_provider_index", 0)
+    if current_index >= len(AVAILABLE_PROVIDERS):
+        current_index = 0
+        st.session_state[PG + "current_provider_index"] = 0 # Reset jika tidak valid
+
     last_error = None
-    for provider_name in AVAILABLE_PROVIDERS:
+
+    # 2. Looping sebanyak jumlah provider, dimulai dari indeks saat ini
+    # Ini memastikan kita mencoba setiap provider maks. 1 kali per panggilan
+    for i in range(len(AVAILABLE_PROVIDERS)):
+        # 3. Hitung indeks provider yang akan dicoba (dengan wrap-around)
+        provider_index_to_try = (current_index + i) % len(AVAILABLE_PROVIDERS)
+        provider_name = AVAILABLE_PROVIDERS[provider_index_to_try]
+        
         config = PROVIDER_CONFIG[provider_name]
         try:
             st.toast(f"Trying out providers: {provider_name}...")
@@ -452,8 +466,14 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
                 temp=st.session_state.get(PG + "temp", 0.2),
                 system=system_prompt_hard, user=user_prompt,
             )
+            
+            # --- Ini bagian sukses ---
             st.toast(f"Berhasil dengan {provider_name}!", icon="✅")
             result["_used_provider"] = f"{provider_name} ({model_to_use.split('/')[-1]})"
+            
+            # --- PERUBAHAN UTAMA ---
+            # 4. SIMPAN indeks yang BERHASIL ini untuk panggilan berikutnya
+            st.session_state[PG + "current_provider_index"] = provider_index_to_try
             return result
 
         except Exception as e:
@@ -479,10 +499,16 @@ def proses_dengan_ai(system_prompt: str, user_prompt: str, fallback_response: Di
             if not should_fallback and isinstance(e, json.JSONDecodeError):
                 st.warning(f"Provider {provider_name} returns a non-JSON response. Beralih...")
                 should_fallback = True
-
+            
             if not should_fallback:
-                raise e
+                # Ini adalah error fatal yang tidak terduga
+                raise e 
 
+            # 5. JIKA GAGAL (should_fallback = True)
+            # Biarkan loop berlanjut ke 'i' berikutnya untuk mencoba provider selanjutnya.
+            # Kita *tidak* menyimpan indeks yang gagal.
+
+    # 6. Jika loop selesai tanpa 'return', semua provider yang tersedia telah gagal
     raise ProviderUnavailableError(f"All providers failed. Last error: {last_error}")
 
 # ==========================================================
@@ -570,9 +596,9 @@ if c1.button("🚀 Start Analysis", key=PG + "start", use_container_width=True):
     for k in [PG + "df_hasil", PG + "excel_bytes", PG + "pdf_bytes", PG + "json_cache_bytes"]:
         st.session_state[k] = None
     
-    # <-- PERUBAHAN: Reset hasil parsial & flag stop
     st.session_state[PG + "hasil_partial"] = []
     st.session_state[PG + "stop_requested"] = False
+    st.session_state[PG + "current_provider_index"] = 0 # <-- Reset provider index saat start
 
 if c2.button("🔄 Reset", key=PG + "reset", use_container_width=True):
     for k in list(st.session_state.keys()):
@@ -621,10 +647,8 @@ if st.session_state.get(PG + "df_hasil") is None:
     else:
         st.info(f"Cache tidak di-upload. Memproses {len(dosen_to_process)} dosen dari awal.")
 
-    # [HAPUS] hasil = [] -> dipindah ke session_state
     progress_bar = st.progress(0, text="Memulai analisis...")
     
-    # <-- PERUBAHAN: Tambah Tombol Stop
     if st.button("🛑 Stop Processing", key=PG + "stop_btn"):
         st.session_state[PG + "stop_requested"] = True
         st.warning("Permintaan berhenti... Proses akan dihentikan dan menyimpan hasil parsial setelah dosen saat ini selesai.")
@@ -635,13 +659,13 @@ if st.session_state.get(PG + "df_hasil") is None:
          st.success("✅ Tidak ada dosen baru untuk diproses. Semua data diambil dari cache.")
          st.session_state[PG + "df_hasil"] = cached_df
          with st.spinner("Mempersiapkan file unduhan dari cache..."):
-            out_xlsx = io.BytesIO()
-            cached_df.to_excel(out_xlsx, index=False, engine="openpyxl")
-            st.session_state[PG + "excel_bytes"] = out_xlsx.getvalue()
-            st.session_state[PG + "pdf_bytes"] = export_trees_to_pdf(cached_df, dfs["mapping"]).getvalue()
-            
-            json_string = cached_df.to_json(orient='records', indent=4)
-            st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
+             out_xlsx = io.BytesIO()
+             cached_df.to_excel(out_xlsx, index=False, engine="openpyxl")
+             st.session_state[PG + "excel_bytes"] = out_xlsx.getvalue()
+             st.session_state[PG + "pdf_bytes"] = export_trees_to_pdf(cached_df, dfs["mapping"]).getvalue()
+             
+             json_string = cached_df.to_json(orient='records', indent=4)
+             st.session_state[PG + "json_cache_bytes"] = json_string.encode('utf-8')
          st.rerun()
 
     # --- INI ADALAH BLOK try...finally YANG BENAR DAN LENGKAP ---
@@ -649,7 +673,6 @@ if st.session_state.get(PG + "df_hasil") is None:
         total_to_process = len(dosen_to_process)
         for i, dosen in enumerate(sorted(dosen_to_process), 1):
             
-            # <-- PERUBAHAN: Cek flag stop
             if st.session_state[PG + "stop_requested"]:
                 st.warning("Proses dihentikan oleh pengguna. Menyimpan hasil parsial...")
                 break  # Keluar dari loop
@@ -672,12 +695,9 @@ if st.session_state.get(PG + "df_hasil") is None:
             confidence_val = final_decision.get("confidence")
             safe_confidence_score = _safe_float(confidence_val)
 
-            # --- PERBAIKAN BUG "8000" ---
             if safe_confidence_score > 1.0:
                 safe_confidence_score = safe_confidence_score / 100.0
-            # --- AKHIR PERBAIKAN ---
 
-            # <-- PERUBAHAN: Simpan ke session_state
             st.session_state[PG + "hasil_partial"].append(
                 {
                     "Lecturer Name": dosen,
@@ -700,13 +720,11 @@ if st.session_state.get(PG + "df_hasil") is None:
 
     except Exception as e:
         st.error(f"🛑 Proses dihentikan karena error: {e}")
-        # <-- PERUBAHAN: Baca len dari session_state
         st.warning(f"Menyimpan hasil parsial untuk {len(st.session_state[PG + 'hasil_partial'])} dosen yang baru diproses.")
     
     finally:
         progress_bar.empty()
         
-        # <-- PERUBAHAN: Baca hasil dari session_state
         df_new_results = pd.DataFrame(st.session_state[PG + "hasil_partial"]) if st.session_state[PG + "hasil_partial"] else pd.DataFrame()
         
         if 'cached_df' not in locals():
@@ -736,7 +754,6 @@ if st.session_state.get(PG + "df_hasil") is None:
         else:
             st.session_state[PG + "df_hasil"] = None
         
-        # <-- PERUBAHAN: Reset flag dan hasil parsial
         st.session_state[PG + "stop_requested"] = False
         st.session_state[PG + "hasil_partial"] = []
 
