@@ -17,4 +17,6 @@ rapidfuzz
 scikit-learn
 xlsxwriter
 networkx
+sentence-transformers
+
 
