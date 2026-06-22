@@ -631,6 +631,10 @@ OPENROUTER_MODELS = [
     "meta-llama/llama-3.3-8b-instruct:free", "nvidia/nemotron-nano-9b-v2:free",
     "deepseek/deepseek-chat-v3.1:free", "openai/gpt-oss-20b:free",
     "meituan/longcat-flash-chat:free", "alibaba/tongyi-deepresearch-30b-a3b:free",
+    "google/gemma-3n-e2b-it:free", "google/gemma-3n-e4b-it:free", "qwen/qwen3-235b-a22b:free",
+    "google/gemma-3-4b-it:free", "google/gemma-3-12b-it:free", "google/gemma-3-27b-it:free", 
+    "google/gemini-2.0-flash-exp:free","xiaomi/mimo-v2-flash:free","mistralai/devstral-2512:free",
+    "qwen/qwen3-coder:free"
 ]
 GROQ_MODELS = [
     "allam-2-7b", "whisper-large-v3", "openai/gpt-oss-120b", "meta-llama/llama-prompt-guard-2-86m",
@@ -781,7 +785,7 @@ def agentic_draft(nama_dosen, evidence, candidates, plan, rag_engine):
         "   MAKA 'alternatives' HARUS KOSONG ([]). JANGAN MEMAKSAKAN mengisi dengan hal yang tidak relevan (seperti 'Penginderaan Jauh' untuk dosen Hukum).\n"
         "4. Field 2 TIDAK BOLEH sama dengan Field 1.\n\n"
         "Jawab HANYA JSON valid:\n"
-        '{"final_field": str, "alternatives": list, "confidence": number, "reasoning": str, "supporting_sources": dict}'
+        '{"final_field": "Nama Bidang", "alternatives": ["Alt 1", ...], "confidence": 0.0_to_1.0_float_ONLY_DIGITS, "reasoning": "...", "supporting_sources": {...}}'
     )
     return proses_dengan_ai(
         "Anda adalah validator taksonomi yang ketat. Anda dilarang berhalusinasi.", user_prompt,
