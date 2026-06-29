@@ -633,7 +633,7 @@ OPENROUTER_MODELS = [
     "meituan/longcat-flash-chat:free", "alibaba/tongyi-deepresearch-30b-a3b:free",
     "google/gemma-3n-e2b-it:free", "google/gemma-3n-e4b-it:free", "qwen/qwen3-235b-a22b:free",
     "google/gemma-3-4b-it:free", "google/gemma-3-12b-it:free", "google/gemma-3-27b-it:free", 
-    "google/gemini-2.0-flash-exp:free","xiaomi/mimo-v2-flash:free","mistralai/devstral-2512:free",
+    "google/gemini-2.0-flash-exp:free","xiaomi/mimo-v2.5","mistralai/devstral-2512:free",
     "qwen/qwen3-coder:free"
 ]
 GROQ_MODELS = [
